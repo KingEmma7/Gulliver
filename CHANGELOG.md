@@ -14,6 +14,7 @@
 - An unknown `default_connection` in `gulliver.toml` is refused with `ConfigError` and the list of known connections, and `gulliver -c NAME status` refuses an unknown NAME like `preflight` does, instead of quietly using another connection. Thanks to @IG-ABHINAV! (#127, #162)
 
 ### Added
+- `gulliver lint --format markdown [-o PATH]` formats findings as a Markdown table with severity, rule, location, problem and fix for `$GITHUB_STEP_SUMMARY` and PR comments (#133).
 - Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
 
 ## 0.4.0 - 2026-11-11
