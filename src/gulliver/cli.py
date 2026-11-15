@@ -339,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="append", help="col=24h (repeatable)")
     p.add_argument("--min-rows", type=int)
     p.add_argument("--max-change", type=float, help="Max %% row-count change since the last check")
+    p.add_argument("--max-null", action="append", help="col=PCT: at most this %% of rows may be NULL (repeatable)")
     p.add_argument("--samples", type=int, choices=range(21), default=0,
                    help="Up to N offending values per failed unique/accepted/range check (0-20; extra gated queries)")
 
@@ -555,11 +556,12 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                         args.fresh,
                         args.min_rows is not None,
                         args.max_change is not None,
+                        args.max_null,
                     ])
                     if check_flags_passed:
                         parser.error(
                             "do not pass check flags (--where, --unique, --not-null, --accepted, "
-                            "--range, --fresh, --min-rows, --max-change) when using --all."
+                            "--range, --fresh, --max-null, --min-rows, --max-change) when using --all."
                         )
                     result = features.check_all(settings, connection=conn, samples=args.samples)
                 else:
@@ -568,7 +570,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                     result = features.check(settings, args.target, connection=conn, where=args.where,
                                             unique=args.unique, not_null=args.not_null, accepted=args.accepted,
                                             ranges=args.ranges, fresh=args.fresh, min_rows=args.min_rows,
-                                            max_change_pct=args.max_change, samples=args.samples)
+                                            max_change_pct=args.max_change, samples=args.samples,
+                                            max_null=args.max_null)
             return _emit(result, args.json)
         if args.command == "calibration":
             from .calibration import calibration, render_calibration

@@ -88,3 +88,52 @@ def test_requested_checks_keep_the_existing_result(settings):
         assert result["status"] == "ok"
         assert result["next_step"] == "All checks passed."
         assert "checks_requested" not in result
+
+
+# -- max_null: a column that may be partly empty, but not too much -------------------------
+@pytest.mark.parametrize("text, message", [
+    ("col=nan", "finite"),
+    ("col=inf", "finite"),
+    ("col=-1", "between 0 and 100"),
+    ("col=101", "between 0 and 100"),
+    ("col=abc", "needs a percentage"),
+    ("col", "needs col=PCT"),
+])
+def test_max_null_refuses_bad_values(text, message):
+    with pytest.raises(ValueError, match=message):
+        parse_spec(max_null=[text])
+
+
+def test_max_null_accepts_the_bounds():
+    assert parse_spec(max_null=["col=0"]).max_null == {"col": 0.0}
+    assert parse_spec(max_null=["col=100"]).max_null == {"col": 100.0}
+    assert parse_spec(max_null=["col=2.5", "other=0"]).max_null == {"col": 2.5, "other": 0.0}
+
+
+def test_max_null_counts_as_a_requested_check():
+    assert not parse_spec(max_null=["col=5"]).is_empty()
+
+
+# -- max_null in gulliver.toml ------------------------------------------------------------
+def test_max_null_in_a_configured_check():
+    from gulliver.checks import parse_check_config
+
+    cfg = parse_check_config("events", {"target": "events", "max_null": {"amount": 5}})
+    assert cfg.spec.max_null == {"amount": 5.0}
+
+    cfg = parse_check_config("events", {"target": "events", "max_null": ["amount=2.5", "email=0"]})
+    assert cfg.spec.max_null == {"amount": 2.5, "email": 0.0}
+
+
+@pytest.mark.parametrize("data, message", [
+    ({"max_null": {"amount": 101}}, "between 0 and 100"),
+    ({"max_null": {"amount": "five"}}, "must be a number"),
+    ({"max_null": ["amount=nan"]}, "finite"),
+    ({"max_null": ["amount"]}, "col=PCT"),
+])
+def test_max_null_in_a_configured_check_refuses_bad_values(data, message):
+    from gulliver.checks import parse_check_config
+    from gulliver.config import ConfigError
+
+    with pytest.raises(ConfigError, match=message):
+        parse_check_config("events", {"target": "events", **data})

@@ -414,6 +414,9 @@ def _register_feature_tools(server: Any) -> None:
                                                        "partitioned tables).")] = None,
         unique: Annotated[list[str] | None, Field(description="Keys that must be unique; 'a,b' for a composite key.")] = None,
         not_null: Annotated[list[str] | None, Field(description="Columns that may not contain NULL.")] = None,
+        max_null: Annotated[list[str] | None, Field(description="'column=PCT': at most this percent of rows may be "
+                                                               "NULL (0-100), for columns that are partly empty on "
+                                                               "purpose.")] = None,
         accepted: Annotated[list[str] | None, Field(description="Allowed values per column, as 'column=a|b|c'.")] = None,
         ranges: Annotated[list[str] | None, Field(description="'column=min:max' (either side may be empty).")] = None,
         fresh: Annotated[list[str] | None, Field(description="'column=24h': newest value must be at most this old.")] = None,
@@ -428,7 +431,7 @@ def _register_feature_tools(server: Any) -> None:
                     "next_step": "Provide target='table' or name='configured_check'."}
         return _guard(features.check, target or name, name=name, connection=connection, where=where, unique=unique,
                       not_null=not_null, accepted=accepted, ranges=ranges, fresh=fresh, min_rows=min_rows,
-                      max_change_pct=max_change_pct, samples=samples)
+                      max_change_pct=max_change_pct, samples=samples, max_null=max_null)
 
     @server.tool(name="gulliver_top", annotations=RUNS_QUERIES,
                  description="Workload review: the most expensive repeated queries (grouped by shape, literals "

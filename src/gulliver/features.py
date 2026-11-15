@@ -558,7 +558,8 @@ def check(settings: Settings, target: str, connection: str | None = None, where:
           unique: list[str] | None = None, not_null: list[str] | None = None, accepted: list[str] | None = None,
           ranges: list[str] | None = None, fresh: list[str] | None = None, min_rows: int | None = None,
           max_change_pct: float | None = None, samples: int = 0, name: str | None = None,
-          spec: checks_mod.CheckSpec | None = None) -> dict[str, Any]:
+          spec: checks_mod.CheckSpec | None = None,
+          max_null: list[str] | None = None) -> dict[str, Any]:
     if isinstance(samples, bool) or not isinstance(samples, int) or not 0 <= samples <= 20:
         return _error("samples must be an integer from 0 to 20.")
     base_spec = spec
@@ -585,7 +586,8 @@ def check(settings: Settings, target: str, connection: str | None = None, where:
             samples = cfg.samples
         base_spec = cfg.spec
     try:
-        cli_spec = checks_mod.parse_spec(unique, not_null, accepted, ranges, fresh, min_rows, max_change_pct)
+        cli_spec = checks_mod.parse_spec(unique, not_null, accepted, ranges, fresh, min_rows, max_change_pct,
+                                         max_null)
     except UsageError as exc:
         return _error(str(exc), next_step=exc.next_step)
     except ValueError as exc:
