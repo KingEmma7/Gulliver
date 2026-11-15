@@ -662,7 +662,7 @@ Every `gulliver_run` preview is checked before the agent or the receipt on disk 
 
 - **Sensitive columns** by name (`email`, `iban`, `card_number`, `password`, `api_key`, Dutch names too),
   through your SQL (aliases, CTEs, `SELECT *`, a whole row as one value), and by validated value patterns
-  (email, phone, IBAN mod-97, Luhn card numbers, BSN 11-check, IP, JWT, API-key shapes).
+  (email, phone, IBAN mod-97, Luhn card numbers, BSN 11-check, IP, JWT, API-key shapes, connection URLs with passwords).
 - **Untrusted envelope.** The result has `untrusted: true`. Text that reads like instructions to an AI ("ignore
   previous instructions", `gulliver_*` tool names, hidden Unicode, base64) is listed in `injection` and
   `data_warnings`.
@@ -779,6 +779,7 @@ The action posts one PR comment and updates it on every push, writes the job sum
 | GV016 | order-by-random | warn |
 | GV017 | deep-offset | warn |
 | GV018 | count-for-existence | info |
+| GV020 | null-comparison | warn |
 | GV900 | parse-error (file lint only) | warn |
 | GV901 | unused-ignore (an unreadable or unused `gulliver: ignore`) | warn |
 

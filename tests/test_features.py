@@ -233,6 +233,32 @@ def test_diff_identical(settings):
     assert r["left_rows"] == r["right_rows"] == 20_000
 
 
+def test_diff_unknown_column_refused(settings, capsys):
+    r = features.diff(settings, "users", "select user_id, country, signup_date from users", ["user_id"],
+                      columns=["country", "nosuch"])
+    assert r["status"] == "error"
+    assert r["error"] == "Column(s) not in both results: nosuch"
+    assert r["next_step"] == "Pick columns that both queries return."
+
+    r_right_missing = features.diff(settings, "users", "select user_id, signup_date from users", ["user_id"],
+                                    columns=["country"])
+    assert r_right_missing["status"] == "error"
+    assert r_right_missing["error"] == "Column(s) not in both results: country"
+
+    dsn = str(settings.connection("default").params["path"])
+    exit_code = main(["diff", "--dsn", dsn, "--left", "users", "--right", "users",
+                      "--key", "user_id", "--columns", "country,nosuch"])
+    assert exit_code == 1
+    assert "Column(s) not in both results: nosuch" in capsys.readouterr().out
+
+
+def test_diff_columns_mixed_case(settings):
+    r = features.diff(settings, "users", "select user_id, country, signup_date from users", ["user_id"],
+                      columns=["COUNTRY"])
+    assert r["status"] == "ok" and r["identical"] is True
+    assert r["columns_compared"] == ["country"]
+
+
 def test_diff_finds_missing_extra_changed(settings):
     right = ("select user_id, case when user_id = 7 then 'XX' else country end as country, signup_date "
              "from users where user_id <> 5 union all select 999999, 'NL', date '2020-01-01'")

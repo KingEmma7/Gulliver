@@ -99,6 +99,21 @@ def test_small_data_skips_rehearsal(settings):
     assert reh["status"] in ("ok", "warn", "skipped")
 
 
+def test_rehearse_negative_seed_refused(settings):
+    receipts_before = len(core.list_receipts(settings)["receipts"])
+    res = core.rehearse(settings, GOOD, seed=-1)
+    assert res["status"] == "error"
+    assert "--seed must be 0 or more" in res["error"]
+    receipts_after = len(core.list_receipts(settings)["receipts"])
+    assert receipts_after == receipts_before
+
+
+def test_rehearse_valid_seed_and_fractions(settings):
+    res = core.rehearse(settings, GOOD, fractions=[0.01, 0.03], seed=7)
+    assert res["status"] in ("ok", "warn")
+    assert [r["fraction"] for r in res["rungs"]] == [0.01, 0.03]
+
+
 def test_tiny_table_is_skipped(tmp_path, state):
     db = tmp_path / "tiny.duckdb"
     con = duckdb.connect(str(db))
@@ -190,3 +205,19 @@ def test_budget_defaults_are_sane():
     b = Budget()
     assert b.approval_over_usd < b.max_query_usd < b.day_usd
     assert Connection("x", "duckdb").public_dict() == {"name": "x", "engine": "duckdb"}
+
+
+def test_run_refuses_negative_max_rows_and_allows_zero(settings):
+    err = core.run(settings, GOOD, max_rows=-5)
+    assert err["status"] == "error"
+    assert "-5" in err["error"] and "--max-rows" in err["error"] and err["next_step"]
+    assert core.list_receipts(settings)["receipts"] == []
+
+    zero = core.run(settings, GOOD, max_rows=0)
+    assert zero["status"] == "ok"
+    assert zero["preview"] == []
+    assert zero["actual"]["rows"] == 8
+
+    over = core.run(settings, GOOD, max_rows=settings.budget.max_output_rows + 50)
+    assert over["status"] == "ok"
+    assert len(over["preview"]) <= settings.budget.max_output_rows

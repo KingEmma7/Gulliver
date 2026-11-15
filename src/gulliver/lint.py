@@ -36,6 +36,7 @@ RULES = {
     "GV016": "order-by-random",
     "GV017": "deep-offset",
     "GV018": "count-for-existence",
+    "GV020": "null-comparison",
 }
 
 DEEP_OFFSET_THRESHOLD = 10_000
@@ -91,11 +92,37 @@ def _is_star_projection(node: exp.Expression) -> bool:
 
 
 def _join_condition(join: exp.Join) -> exp.Expression | None:
-    return join.args.get("on") or (exp.true() if join.args.get("using") else None)
+    # NATURAL JOIN joins on the columns both tables share, so it has an implicit key.
+    has_key = join.args.get("using") or (join.args.get("method") or "").upper() == "NATURAL"
+    return join.args.get("on") or (exp.true() if has_key else None)
 
 
 def _aliases_in(expr: exp.Expression) -> set[str]:
     return {col.table.lower() for col in expr.find_all(exp.Column) if col.table}
+
+
+def _on_link(on: exp.Expression) -> str:
+    """Does an ON condition relate tables to each other?
+
+    "constant": it names no column at all (ON 1=1, ON TRUE).
+    "unlinked": it has equalities, but each one stays inside a single table (ON t.id = t.id).
+    "ok": some equality compares columns of two tables, or Gulliver cannot tell (an unqualified
+    column could come from either side, so it is never guessed).
+    """
+    if next(on.find_all(exp.Column), None) is None:
+        return "constant"
+    equalities = list(on.find_all(exp.EQ))
+    if not equalities:
+        return "ok"  # no equality at all: GV008 handles it
+    for eq in equalities:
+        tables: set[str] = set()
+        for col in eq.find_all(exp.Column):
+            if not col.table:
+                return "ok"
+            tables.add(col.table.lower())
+        if len(tables) >= 2:
+            return "ok"
+    return "unlinked"
 
 
 # reading `0 < (SELECT COUNT(*) ...)` as `(SELECT COUNT(*) ...) > 0`
@@ -244,6 +271,20 @@ def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
                 "A subquery counts every matching row only to test that the count is zero.",
                 "Use NOT EXISTS (SELECT 1 FROM ...): it can stop at the first match.", comparison)
 
+    # GV020 null-comparison: equality/inequality with a literal NULL is never true.
+    for comparison in tree.find_all(exp.EQ, exp.NEQ):
+        if any(isinstance(side.unnest(), exp.Null) for side in (comparison.this, comparison.expression)):
+            # BigQuery's generator reduces the whole comparison to NULL, losing its operands.
+            operator = "=" if isinstance(comparison, exp.EQ) else "<>"
+            expression = (
+                f"{comparison.this.sql(dialect=dialect)} {operator} "
+                f"{comparison.expression.sql(dialect=dialect)}"
+            )
+            add("GV020", "warn",
+                f"{expression} is never true: a comparison with NULL gives NULL.",
+                "Use IS NULL / IS NOT NULL (or IS NOT DISTINCT FROM if you want NULL = NULL to match).",
+                comparison)
+
     # GV003 cartesian-join / GV008 non-equi-join
     for select in tree.find_all(exp.Select):
         where = select.args.get("where")
@@ -278,6 +319,22 @@ def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
                 continue
             if join.args.get("on") is not None:
                 on = join.args["on"]
+                link = _on_link(on)
+                if link == "constant":
+                    add("GV003", "error",
+                        f"Join with {alias or 'a table'} has a condition that names no column "
+                        f"({on.sql(dialect=dialect)}): a cartesian product.",
+                        "Add ON <key> = <key>. If you really want every combination, write CROSS JOIN.",
+                        join)
+                    continue
+                if link == "unlinked":
+                    add("GV003", "error",
+                        f"Join with {alias or 'a table'} has a condition that does not link the two tables "
+                        f"({on.sql(dialect=dialect)}): a cartesian product.",
+                        "Compare a column of each table, e.g. ON a.id = b.id. If you really want every "
+                        "combination, write CROSS JOIN.",
+                        join)
+                    continue
                 has_eq = any(True for _ in on.find_all(exp.EQ))
                 top_or = isinstance(on, exp.Or)
                 if not has_eq or top_or:

@@ -94,7 +94,8 @@ def _runaway():
 
 
 # -- status ----------------------------------------------------------------------------
-def status(settings: Settings) -> dict[str, Any]:
+def status(settings: Settings, connection: str | None = None) -> dict[str, Any]:
+    settings.connection(connection)  # raises ConfigError for an unknown -c name
     spent = _store(settings).spent_today()
     budget = settings.budget
     res = {
@@ -357,9 +358,14 @@ def _rehearse(settings: Settings, sql: str, connection: str | None, fractions: l
         return result
     if sample not in ("largest", "all"):
         return _error("sample must be 'largest' or 'all'")
-    fracs = sorted({float(f) for f in (fractions or DEFAULT_FRACTIONS)})
+    try:
+        fracs = sorted({float(f) for f in (fractions or DEFAULT_FRACTIONS)})
+    except (ValueError, TypeError):
+        return _error("fractions must be between 0 and 1, e.g. [0.01, 0.03, 0.1]")
     if not fracs or any(not (0 < f < 1) for f in fracs):
         return _error("fractions must be between 0 and 1, e.g. [0.01, 0.03, 0.1]")
+    if seed < 0:
+        return _error("--seed must be 0 or more")
 
     with _engine(settings, connection) as (_, engine):
         infos, table_notes = _table_infos(engine, statement)
@@ -602,6 +608,11 @@ def _rehearse(settings: Settings, sql: str, connection: str | None, fractions: l
 # -- run -------------------------------------------------------------------------------
 def run(settings: Settings, sql: str, connection: str | None = None, max_rows: int | None = None,
         allow_write: bool = False) -> dict[str, Any]:
+    if max_rows is not None and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 0):
+        return _error(
+            f"--max-rows must be at least 0, got {max_rows}.",
+            "Pass a non-negative integer for --max-rows (0 returns row counts without preview rows).",
+        )
     try:
         return _run(settings, sql, connection, max_rows, allow_write)
     except ConfigError as exc:
@@ -760,7 +771,8 @@ def list_receipts(settings: Settings, limit: int = 20, status: str | None = None
     if limit < 1:
         return _error("--limit must be at least 1.", "Use a positive limit, for example --limit 20.")
 
-    receipts = _store(settings).receipts()
+    all_receipts = _store(settings).receipts()
+    receipts = all_receipts
     if status is not None:
         receipts = [rec for rec in receipts if rec.get("status") == status]
 
@@ -776,11 +788,27 @@ def list_receipts(settings: Settings, limit: int = 20, status: str | None = None
             "sql_preview": sql[:120],
         })
 
-    return {
+    if not all_receipts:
+        next_step = "Run gulliver preflight, rehearse or run first; each writes a receipt."
+        message = "No receipts yet."
+    elif not summaries:
+        existing_statuses = sorted({str(rec.get("status")) for rec in all_receipts if rec.get("status")})
+        status_list = ", ".join(existing_statuses) if existing_statuses else "none"
+        next_step = f"Statuses in your receipts: {status_list}."
+        message = f"No receipts with status '{status}'."
+    else:
+        next_step = "Use a receipt_id with `gulliver receipt` to inspect the full receipt."
+        message = None
+
+    result: dict[str, Any] = {
         "status": "ok",
         "receipts": summaries,
-        "next_step": "Use a receipt_id with `gulliver receipt` to inspect the full receipt.",
+        "next_step": next_step,
     }
+    if message is not None:
+        result["message"] = message
+
+    return result
 
 
 def approve(settings: Settings, receipt_id: str, note: str = "") -> dict[str, Any]:

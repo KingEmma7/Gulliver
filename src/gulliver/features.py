@@ -261,6 +261,10 @@ def diff(settings: Settings, left_sql: str, right_sql: str, key: list[str], conn
                 return _error(f"Key column(s) not in both results: {', '.join(missing_key)}",
                               "Pick key columns that both queries return.")
             if columns:
+                missing_columns = [c for c in columns if c.lower() not in lcols or c.lower() not in rcols]
+                if missing_columns:
+                    return _error(f"Column(s) not in both results: {', '.join(missing_columns)}",
+                                  "Pick columns that both queries return.")
                 compare_cols = [c.lower() for c in columns]
             else:
                 compare_cols = sorted(set(lcols) & set(rcols))
