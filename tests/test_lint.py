@@ -139,6 +139,62 @@ def test_function_on_filter_column():
     assert "GV005" not in rules("select count(*) from events where ts >= '2024-01-01'")
 
 
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+def test_gv005_contextual_fix_advice(dialect):
+    def get_fix(sql):
+        stmt = classify(sql, dialect)
+        findings = lint(stmt.select, dialect)
+        for f in findings:
+            if f.rule == "GV005":
+                return f.fix
+        return None
+
+    # 1. Date / time function and casts
+    fix_date = get_fix("select a from t where date(created_at) = '2024-01-01' limit 5")
+    assert fix_date is not None
+    assert "Compare the raw column to a constant range" in fix_date
+    assert "created_at >= '2024-01-01'" in fix_date
+    assert "DATE(created_at)" in fix_date
+    assert "ts" not in fix_date
+
+    fix_cast = get_fix("select a from t where cast(event_time as date) = '2024-01-01' limit 5")
+    assert fix_cast is not None
+    assert "Compare the raw column to a constant range" in fix_cast
+    assert "event_time >= '2024-01-01'" in fix_cast
+    assert "ts" not in fix_cast
+
+    # 2. Arithmetic with constants
+    fix_arith = get_fix("select a from t where amount * 1.2 > 100 limit 5")
+    assert fix_arith is not None
+    assert "Move the calculation to the constant side" in fix_arith
+    assert "amount > 100 / 1.2" in fix_arith
+    assert "ts" not in fix_arith
+
+    # 3. Case or trim function
+    fix_case = get_fix("select a from t where upper(user_name) like 'A%' limit 5")
+    assert fix_case is not None
+    assert "user_name" in fix_case
+    assert "functions on user_name force a full scan" in fix_case
+    if dialect == "bigquery":
+        assert "precomputed lowercase column" in fix_case
+        assert "ILIKE" not in fix_case
+    else:
+        assert "ILIKE where supported" in fix_case
+    assert "ts" not in fix_case
+
+    # 4. COALESCE / NULL handling
+    fix_null = get_fix("select a from t where coalesce(order_status, 'x') = 'x' limit 5")
+    assert fix_null is not None
+    assert "Write the NULL case out explicitly: (order_status = 'x' OR order_status IS NULL)." in fix_null
+    assert "ts" not in fix_null
+
+    # 5. Other function fallback
+    fix_other = get_fix("select a from t where substr(country_code, 1, 2) = 'NL' limit 5")
+    assert fix_other is not None
+    assert fix_other == "Compare the raw column where possible, or filter on a partition or indexed column first."
+    assert "ts" not in fix_other
+
+
 def test_order_without_limit():
     assert rules("select id from events order by id")["GV006"] == "warn"
 

@@ -187,6 +187,68 @@ def _count_for_existence(node: exp.Expression) -> str | None:
     return None
 
 
+def _gv005_fix(operand: exp.Expression, column_sql: str, dialect: str | None = None) -> str:
+    """Advice text for GV005 based on the function or calculation wrapping the filtered column."""
+    # 1. Date / time function or cast to date
+    if isinstance(operand, (
+        exp.Date, exp.TsOrDsToDate, exp.DateTrunc, exp.TimestampTrunc, exp.Extract,
+        exp.TimeToStr, exp.StrToTime, exp.StrToDate, exp.DateToDi, exp.DiToDate,
+        exp.Year, exp.DayOfYear, exp.TimeTrunc, exp.DatetimeTrunc, exp.DateAdd, exp.DateSub,
+    )):
+        return (
+            f"Compare the raw column to a constant range, e.g. {column_sql} >= '2024-01-01' AND "
+            f"{column_sql} < '2024-01-02' instead of DATE({column_sql}) = '2024-01-01'."
+        )
+    if isinstance(operand, exp.Cast):
+        to_sql = operand.to.sql().upper()
+        if any(t in to_sql for t in ("DATE", "TIME", "TIMESTAMP")):
+            return (
+                f"Compare the raw column to a constant range, e.g. {column_sql} >= '2024-01-01' AND "
+                f"{column_sql} < '2024-01-02' instead of DATE({column_sql}) = '2024-01-01'."
+            )
+    if isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        if any(k in fname for k in ("date", "time", "year", "month", "day", "extract", "strftime")):
+            return (
+                f"Compare the raw column to a constant range, e.g. {column_sql} >= '2024-01-01' AND "
+                f"{column_sql} < '2024-01-02' instead of DATE({column_sql}) = '2024-01-01'."
+            )
+
+    # 2. Arithmetic with constants (+ - * /)
+    if isinstance(operand, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        return (
+            f"Move the calculation to the constant side, e.g. {column_sql} > 100 / 1.2 instead of "
+            f"{column_sql} * 1.2 > 100."
+        )
+
+    # 3. Case or trim function (UPPER, LOWER, TRIM)
+    is_case_trim = isinstance(operand, (exp.Upper, exp.Lower, exp.Trim))
+    if not is_case_trim and isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        is_case_trim = fname in ("upper", "lower", "trim", "ltrim", "rtrim")
+    if is_case_trim:
+        if dialect == "bigquery":
+            return (
+                f"Store or compare a normalized value: a precomputed lowercase column, as functions on "
+                f"{column_sql} force a full scan."
+            )
+        return (
+            f"Store or compare a normalized value: a case-insensitive comparison (ILIKE where supported) or "
+            f"a precomputed lowercase column, as functions on {column_sql} force a full scan."
+        )
+
+    # 4. COALESCE / IFNULL / NVL
+    is_coalesce = isinstance(operand, exp.Coalesce)
+    if not is_coalesce and isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        is_coalesce = fname in ("coalesce", "ifnull", "nvl")
+    if is_coalesce:
+        return f"Write the NULL case out explicitly: ({column_sql} = 'x' OR {column_sql} IS NULL)."
+
+    # 5. Anything else
+    return "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+
 def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
          table_info: dict[str, dict] | None = None) -> list[Finding]:
     """Lint a read tree (the SELECT part). `table_info` maps lower-case table refs to engine
@@ -376,11 +438,11 @@ def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
                         continue
                     cols = list(operand.find_all(exp.Column))
                     if cols and not isinstance(operand, exp.AggFunc):
+                        col_sql = cols[0].sql(dialect=dialect)
                         add("GV005", "warn",
-                            f"The filter wraps {cols[0].sql(dialect=dialect)} in a function or calculation, which "
+                            f"The filter wraps {col_sql} in a function or calculation, which "
                             "blocks partition pruning and min/max skipping.",
-                            "Compare the raw column to a constant range, e.g. ts >= '2024-01-01' AND "
-                            "ts < '2024-01-02' instead of DATE(ts) = '2024-01-01'.", cmp)
+                            _gv005_fix(operand, col_sql, dialect), cmp)
                         break
 
     # GV007 exact-count-distinct
