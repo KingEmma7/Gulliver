@@ -18,6 +18,7 @@
 - `demo --events N` refuses a value below 1 or above 50,000,000 with `status: error`, a `next_step` and exit 1, before any file is created, instead of reporting `events: -5` for an empty table. Thanks to @dianatofficial! (#112, #115)
 - `fix --verify --timezone` refuses an unknown time zone with `status: error`, a `next_step` and exit 1 before anything is rewritten or tested, instead of reporting `status: ok` with a DuckDB error inside `verify`. Zone names still match case-insensitively (`utc`, `europe/amsterdam`). Thanks to @Mr45401! (#153, #167)
 - The result guard masks connection URLs with an embedded password (`postgresql://user:password@host/db`), as a whole cell and inside free text (`[masked:credential_url]`); they count as secrets, so the default policy masks them. Thanks to @dianatofficial! (#154, #166)
+- `incremental` refuses a `--time-column` or `--unique-key` that is not a column of the source or the model, with `status: error`, a `next_step` that lists the columns, and exit 1, instead of generating a model that uses it. Thanks to @Ipsita-Mondal-30! (#157, #165)
 
 ### Added
 - Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
