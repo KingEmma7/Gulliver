@@ -192,6 +192,26 @@ def test_gv005_contextual_fix_advice(dialect):
     assert fix_neg == "Move the calculation to the constant side of the comparison."
     assert "ts" not in fix_neg
 
+    fix_nested_paren = get_fix("select a from t where (amount + 5) * 2 > 100 limit 5")
+    assert fix_nested_paren == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_nested_paren
+
+    fix_nested_op = get_fix("select a from t where amount * 2 + 5 > 100 limit 5")
+    assert fix_nested_op == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_nested_op
+
+    fix_between = get_fix("select a from t where amount + 5 between 10 and 20 limit 5")
+    assert fix_between == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_between
+
+    fix_in = get_fix("select a from t where amount * 2 in (10, 20) limit 5")
+    assert fix_in == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_in
+
+    fix_zero = get_fix("select a from t where amount * 0 > 1 limit 5")
+    assert fix_zero == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_zero
+
     # 3. Case or trim function
     fix_case = get_fix("select a from t where upper(user_name) like 'A%' limit 5")
     assert fix_case is not None
@@ -212,6 +232,14 @@ def test_gv005_contextual_fix_advice(dialect):
     fix_null_diff = get_fix("select a from t where coalesce(status, 'unknown') = 'x' limit 5")
     assert fix_null_diff == "Filter directly on the column: status = 'x'."
     assert "ts" not in fix_null_diff
+
+    fix_null_neq = get_fix("select a from t where coalesce(status, 'x') <> 'x' limit 5")
+    assert fix_null_neq == "Compare the raw column where possible, or filter on a partition or indexed column first."
+    assert "ts" not in fix_null_neq
+
+    fix_null_in = get_fix("select a from t where coalesce(status, 'x') in ('x', 'y') limit 5")
+    assert fix_null_in == "Compare the raw column where possible, or filter on a partition or indexed column first."
+    assert "ts" not in fix_null_in
 
     # 5. Other function fallback
     fix_other = get_fix("select a from t where substr(country_code, 1, 2) = 'NL' limit 5")

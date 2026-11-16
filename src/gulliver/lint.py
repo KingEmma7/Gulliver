@@ -221,12 +221,13 @@ def _gv005_fix(
 
     # 2. Arithmetic with constants (+ - * /)
     if isinstance(operand, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
-        this_cols = list(operand.this.find_all(exp.Column))
-        expr_cols = list(operand.expression.find_all(exp.Column))
-        if this_cols and not expr_cols:
+        if not isinstance(cmp, (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.NEQ)):
+            return "Move the calculation to the constant side of the comparison."
+
+        if isinstance(operand.this, exp.Column) and not list(operand.expression.find_all(exp.Column)):
             col_on_right = False
             arith_const_node = operand.expression
-        elif expr_cols and not this_cols:
+        elif isinstance(operand.expression, exp.Column) and not list(operand.this.find_all(exp.Column)):
             col_on_right = True
             arith_const_node = operand.this
         else:
@@ -311,6 +312,8 @@ def _gv005_fix(
         fname = (operand.key or operand.sql_name()).lower()
         is_coalesce = fname in ("coalesce", "ifnull", "nvl")
     if is_coalesce:
+        if not isinstance(cmp, exp.EQ):
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
         if isinstance(operand, exp.Coalesce):
             default_arg = operand.expressions[0] if operand.expressions else None
         else:
