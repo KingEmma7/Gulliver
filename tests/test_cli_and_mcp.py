@@ -39,6 +39,16 @@ def test_cli_exit_codes(demo_db, state, capsys):
     assert main(["--dsn", demo_db, "run", "delete from events"]) == 2
 
 
+@pytest.mark.parametrize("limit", [-5, 0])
+def test_cli_invalid_limit_returns_a_clean_error(state, capsys, limit):
+    assert main(["fix", "--mode", "all", "--dialect", "duckdb", "--limit", str(limit),
+                 "--json", "SELECT * FROM events"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "error"
+    assert str(limit) in result["error"] and "limit" in result["error"]
+    assert result["next_step"]
+
+
 def test_cli_sql_from_file(demo_db, state, tmp_path, capsys):
     q = tmp_path / "q.sql"
     q.write_text("select country, count(*) from users group by 1")
@@ -76,6 +86,13 @@ def test_cli_receipt_output_file(demo_db, state, tmp_path, capsys):
     js = tmp_path / "receipt.json"
     assert main(["--dsn", demo_db, "receipt", "latest", "--format", "json", "-o", str(js)]) == 0
     assert json.loads(js.read_text(encoding="utf-8"))["receipt_id"].startswith("gv-")
+
+
+def test_cli_empty_check_explains_no_validation(demo_db, state, capsys):
+    assert main(["--dsn", demo_db, "check", "users", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result.get("checks_requested") == 0
+    assert "No checks were requested" in result["next_step"]
 
 
 def test_cli_receipt_list_order_limit_and_status(demo_db, state, capsys):
@@ -148,7 +165,7 @@ def test_cli_translate_output_file(tmp_path, capsys):
     assert out.read_text(encoding="utf-8") == data["sql"]
 
 
-fix-check-thresholds-106
+
 @pytest.mark.parametrize("extra, message", [
     (["--min-rows", "-5"], "min_rows"),
     (["--max-change", "-5"], "max_change"),
@@ -165,7 +182,37 @@ def test_check_accepts_zero_min_rows(demo_db):
     assert main(["--dsn", demo_db, "--json", "check", "events", "--not-null", "event_id", "--min-rows", "0"]) == 0
 
 
-main
+
+@pytest.mark.parametrize("command", ["lint", "preflight", "rehearse", "run"])
+@pytest.mark.parametrize("sql", ["SELECT 1 FROM", "SELECT a b c FROM t", "SELECT 'abc"])
+def test_cli_syntax_errors_stay_blocked_with_actionable_advice(command, sql, demo_db, state, capsys):
+    assert main(["--dsn", demo_db, command, "--json", sql]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "block"
+    assert result["next_step"] == (
+        "Fix the syntax error and try again. If the SQL is for another engine, set --dialect."
+    )
+    reason = result["statement"]["reason"]
+    assert "line 1, column " in reason
+    assert "<Token" not in reason and "TokenType" not in reason
+
+
+@pytest.mark.parametrize("sql", ["DROP TABLE t", "SELECT 1; SELECT 2"])
+def test_cli_non_syntax_blocks_keep_existing_advice(sql, demo_db, state, capsys):
+    for command in ("lint", "preflight", "rehearse", "run"):
+        assert main(["--dsn", demo_db, command, "--json", sql]) == 2
+        result = json.loads(capsys.readouterr().out)
+        if command == "lint":
+            assert result["next_step"] == "Send a single SELECT (or CREATE/INSERT ... SELECT)."
+        elif command == "rehearse":
+            assert result["next_step"] == result["statement"]["reason"]
+        else:
+            assert result["next_step"] == (
+                "Rewrite it as one SELECT (or CREATE/INSERT ... SELECT). " + result["statement"]["reason"]
+            )
+
+
+
 def test_mcp_check_by_name_and_status_checks(demo_db, state, tmp_path, monkeypatch):
     db_path = demo_db.replace("\\", "/")
     monkeypatch.chdir(tmp_path)
