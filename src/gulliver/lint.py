@@ -187,7 +187,12 @@ def _count_for_existence(node: exp.Expression) -> str | None:
     return None
 
 
-def _gv005_fix(operand: exp.Expression, column_sql: str, dialect: str | None = None) -> str:
+def _gv005_fix(
+    operand: exp.Expression,
+    column_sql: str,
+    dialect: str | None = None,
+    cmp: exp.Expression | None = None,
+) -> str:
     """Advice text for GV005 based on the function or calculation wrapping the filtered column."""
     # 1. Date / time function or cast to date
     if isinstance(operand, (
@@ -216,10 +221,46 @@ def _gv005_fix(operand: exp.Expression, column_sql: str, dialect: str | None = N
 
     # 2. Arithmetic with constants (+ - * /)
     if isinstance(operand, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
-        return (
-            f"Move the calculation to the constant side, e.g. {column_sql} > 100 / 1.2 instead of "
-            f"{column_sql} * 1.2 > 100."
-        )
+        op_map = {
+            exp.Add: ("+", "-"),
+            exp.Sub: ("-", "+"),
+            exp.Mul: ("*", "/"),
+            exp.Div: ("/", "*"),
+        }
+        op, inv_op = op_map[type(operand)]
+        arith_const_node = operand.expression if list(operand.this.find_all(exp.Column)) else operand.this
+        arith_const_sql = arith_const_node.sql(dialect=dialect) if arith_const_node is not None else "1.2"
+
+        cmp_op_map = {
+            exp.GT: ">",
+            exp.GTE: ">=",
+            exp.LT: "<",
+            exp.LTE: "<=",
+            exp.EQ: "=",
+            exp.NEQ: "<>",
+        }
+        cmp_op_str = cmp_op_map.get(type(cmp), ">") if cmp is not None else ">"
+        cmp_const_node = None
+        is_col_left = True
+        if cmp is not None:
+            if cmp.this == operand:
+                cmp_const_node = cmp.args.get("expression")
+                is_col_left = True
+            elif cmp.args.get("expression") == operand:
+                cmp_const_node = cmp.this
+                is_col_left = False
+        cmp_const_sql = cmp_const_node.sql(dialect=dialect) if cmp_const_node is not None else "100"
+
+        if is_col_left:
+            orig = f"{column_sql} {op} {arith_const_sql} {cmp_op_str} {cmp_const_sql}"
+            rewrite = f"{column_sql} {cmp_op_str} {cmp_const_sql} {inv_op} {arith_const_sql}"
+        else:
+            flip = {">": "<", ">=": "<=", "<": ">", "<=": ">=", "=": "=", "<>": "<>"}
+            flipped_op = flip.get(cmp_op_str, cmp_op_str)
+            orig = f"{cmp_const_sql} {cmp_op_str} {column_sql} {op} {arith_const_sql}"
+            rewrite = f"{column_sql} {flipped_op} {cmp_const_sql} {inv_op} {arith_const_sql}"
+
+        return f"Move the calculation to the constant side, e.g. {rewrite} instead of {orig}."
 
     # 3. Case or trim function (UPPER, LOWER, TRIM)
     is_case_trim = isinstance(operand, (exp.Upper, exp.Lower, exp.Trim))
@@ -243,7 +284,24 @@ def _gv005_fix(operand: exp.Expression, column_sql: str, dialect: str | None = N
         fname = (operand.key or operand.sql_name()).lower()
         is_coalesce = fname in ("coalesce", "ifnull", "nvl")
     if is_coalesce:
-        return f"Write the NULL case out explicitly: ({column_sql} = 'x' OR {column_sql} IS NULL)."
+        if isinstance(operand, exp.Coalesce):
+            default_arg = operand.expressions[0] if operand.expressions else None
+        else:
+            args = operand.expressions if operand.expressions else [operand.this]
+            default_arg = args[1] if len(args) > 1 else (operand.expressions[0] if operand.expressions else None)
+
+        target_val = None
+        if cmp is not None:
+            if cmp.this == operand:
+                target_val = cmp.args.get("expression")
+            elif cmp.args.get("expression") == operand:
+                target_val = cmp.this
+        target_sql = target_val.sql(dialect=dialect) if target_val is not None else "'x'"
+        default_sql = default_arg.sql(dialect=dialect) if default_arg is not None else None
+
+        if default_sql is not None and default_sql == target_sql:
+            return f"Write the NULL case out explicitly: ({column_sql} = {target_sql} OR {column_sql} IS NULL)."
+        return f"Filter directly on the column: {column_sql} = {target_sql}."
 
     # 5. Anything else
     return "Compare the raw column where possible, or filter on a partition or indexed column first."
@@ -442,7 +500,7 @@ def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
                         add("GV005", "warn",
                             f"The filter wraps {col_sql} in a function or calculation, which "
                             "blocks partition pruning and min/max skipping.",
-                            _gv005_fix(operand, col_sql, dialect), cmp)
+                            _gv005_fix(operand, col_sql, dialect, cmp), cmp)
                         break
 
     # GV007 exact-count-distinct

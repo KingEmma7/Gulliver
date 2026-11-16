@@ -163,12 +163,22 @@ def test_gv005_contextual_fix_advice(dialect):
     assert "event_time >= '2024-01-01'" in fix_cast
     assert "ts" not in fix_cast
 
-    # 2. Arithmetic with constants
-    fix_arith = get_fix("select a from t where amount * 1.2 > 100 limit 5")
-    assert fix_arith is not None
-    assert "Move the calculation to the constant side" in fix_arith
-    assert "amount > 100 / 1.2" in fix_arith
-    assert "ts" not in fix_arith
+    # 2. Arithmetic with constants (+ - * /)
+    fix_mul = get_fix("select a from t where amount * 1.2 > 100 limit 5")
+    assert fix_mul == "Move the calculation to the constant side, e.g. amount > 100 / 1.2 instead of amount * 1.2 > 100."
+    assert "ts" not in fix_mul
+
+    fix_add = get_fix("select a from t where amount + 5 > 100 limit 5")
+    assert fix_add == "Move the calculation to the constant side, e.g. amount > 100 - 5 instead of amount + 5 > 100."
+    assert "ts" not in fix_add
+
+    fix_sub = get_fix("select a from t where amount - 5 > 100 limit 5")
+    assert fix_sub == "Move the calculation to the constant side, e.g. amount > 100 + 5 instead of amount - 5 > 100."
+    assert "ts" not in fix_sub
+
+    fix_div = get_fix("select a from t where amount / 2 > 10 limit 5")
+    assert fix_div == "Move the calculation to the constant side, e.g. amount > 10 * 2 instead of amount / 2 > 10."
+    assert "ts" not in fix_div
 
     # 3. Case or trim function
     fix_case = get_fix("select a from t where upper(user_name) like 'A%' limit 5")
@@ -183,10 +193,13 @@ def test_gv005_contextual_fix_advice(dialect):
     assert "ts" not in fix_case
 
     # 4. COALESCE / NULL handling
-    fix_null = get_fix("select a from t where coalesce(order_status, 'x') = 'x' limit 5")
-    assert fix_null is not None
-    assert "Write the NULL case out explicitly: (order_status = 'x' OR order_status IS NULL)." in fix_null
-    assert "ts" not in fix_null
+    fix_null_match = get_fix("select a from t where coalesce(order_status, 'x') = 'x' limit 5")
+    assert fix_null_match == "Write the NULL case out explicitly: (order_status = 'x' OR order_status IS NULL)."
+    assert "ts" not in fix_null_match
+
+    fix_null_diff = get_fix("select a from t where coalesce(status, 'unknown') = 'x' limit 5")
+    assert fix_null_diff == "Filter directly on the column: status = 'x'."
+    assert "ts" not in fix_null_diff
 
     # 5. Other function fallback
     fix_other = get_fix("select a from t where substr(country_code, 1, 2) = 'NL' limit 5")
