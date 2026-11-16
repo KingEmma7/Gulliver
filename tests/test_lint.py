@@ -368,3 +368,50 @@ def test_null_comparison_is_listed_without_autofix():
     for mode in ("safe", "all"):
         result = rewrite(sql, mode=mode)
         assert result["changes"] == []
+
+
+HAVING_BASE = "select event_type, count(*) as n from events group by event_type having "
+
+
+@pytest.mark.parametrize("having", [
+    "event_type = 'purchase'",
+    "event_type = 'purchase' and count(*) > 10",
+    "count(*) > 10 and event_type in ('a', 'b')",
+    "(event_type = 'a')",
+])
+def test_having_on_group_column_flagged(having):
+    assert rules(HAVING_BASE + having)["GV019"] == "info"
+
+
+def test_having_on_group_column_by_position_and_grouped_expression():
+    assert "GV019" in rules("select lower(name) as k, count(*) from t group by 1 having lower(name) = 'a'")
+    assert "GV019" in rules("select event_type, count(*) from events group by 1 having event_type = 'a'")
+
+
+@pytest.mark.parametrize("sql", [
+    "select event_type, count(*) as n from events group by event_type having count(*) > 10",
+    "select count(*) as n from events having count(*) > 10",
+    "select event_type, count(*) as n from events group by event_type having n > 10",
+    "select event_type, count(*) as n from events group by rollup (event_type) having event_type = 'a'",
+    "select event_type, count(*) as n from events group by cube (event_type) having event_type = 'a'",
+    "select event_type, count(*) as n from events group by grouping sets ((event_type)) having event_type = 'a'",
+    "select event_type, count(*) from events group by event_type "
+    "having event_type in (select event_type from other)",
+    "select event_type, count(*) from events group by event_type having random() < 0.5",
+    "select event_type, count(*) from events group by event_type having event_type = 'a' or count(*) > 3",
+    "select event_type, count(*) from events group by event_type having user_id = 3",
+    "select event_type, count(*) as event_type from events group by event_type having event_type > 3",
+    "select event_type, count(*) from events group by event_type having 1 = 1",
+])
+def test_having_on_group_column_not_flagged(sql):
+    assert "GV019" not in rules(sql), sql
+
+
+def test_having_on_group_column_is_listed_with_rule_metadata():
+    from gulliver.lint_report import rules as rule_docs
+
+    rule, = [r for r in rule_docs() if r["rule"] == "GV019"]
+    assert rule["name"] == "having-on-group-column"
+    assert rule["default_severity"] == "info"
+    assert rule["autofix"] == "none"
+    assert "WHERE" in rule["fix"]
