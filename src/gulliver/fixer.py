@@ -471,6 +471,9 @@ def fix(settings: Any, sql: str, connection: str | None = None, dialect: str | N
     from .core import _engine, _error, _fmt_bytes, _fmt_usd, _table_infos
     from .engines import EngineError, dialect_for
 
+    if mode == "all" and limit is not None and limit < 1:
+        return _error(f"limit must be at least 1, got {limit}.", "Use --limit 1 or higher, or omit --limit.")
+
     # `cases or DEFAULT_CASES` below turns 0 into the default of 200, and a negative
     # number reaches the verifier as a range with no cases, which reports having
     # checked nothing. Neither is what the caller asked for, so refuse both before any

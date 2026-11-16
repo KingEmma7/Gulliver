@@ -39,6 +39,16 @@ def test_cli_exit_codes(demo_db, state, capsys):
     assert main(["--dsn", demo_db, "run", "delete from events"]) == 2
 
 
+@pytest.mark.parametrize("limit", [-5, 0])
+def test_cli_invalid_limit_returns_a_clean_error(state, capsys, limit):
+    assert main(["fix", "--mode", "all", "--dialect", "duckdb", "--limit", str(limit),
+                 "--json", "SELECT * FROM events"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "error"
+    assert str(limit) in result["error"] and "limit" in result["error"]
+    assert result["next_step"]
+
+
 def test_cli_sql_from_file(demo_db, state, tmp_path, capsys):
     q = tmp_path / "q.sql"
     q.write_text("select country, count(*) from users group by 1")
