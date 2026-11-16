@@ -3,8 +3,22 @@
 ## Unreleased
 
 ### Fixed
-- `incremental` refuses a `--time-column` that is not a column of the source table and a `--unique-key` that the model does not return, with `status: error`, exit code 1 and a `next_step` listing the columns that exist. Names are compared case-insensitively. Without a connection, or when the model cannot be run to read its columns, nothing is checked (a note says so). (#157)
+- Lint GV003 now reports a join whose `ON` condition does not relate the two tables (`ON 1=1`, `ON TRUE`, `ON t.id = t.id`) as a cartesian product (error) instead of passing it as a key join. A real key, with or without extra conditions, and unqualified columns are unchanged. Thanks to @Ipsita-Mondal-30! (#156, #164)
 - `impact`, `lineage` and `drift` refuse `--models` pointing to a folder with no `.sql` files with `status: error` and a `next_step` instead of reporting zero models or empty impact. Thanks to @shaw778! (#122, #147)
+- `gulliver fix --verify --cases N` refuses a value below 1 with `status: error` and a `next_step`, before any rewrite is verified. Before, `--cases 0` became the default of 200 and `--cases -5` ran one case and reported `status: "ok"`, which is a weaker guarantee than it reads. The MCP tool already refused these with `ge=1`. `--cases` without `--verify` is still ignored Thanks to @tyza66! (#111, #117)
+- `parse_period` refuses an out-of-range period with `ValueError` and a clear message, so `prune --older-than 99999999999d`, `check --fresh ts=99999999999d` and `incremental --period 99999999999d` return `status: "error"` and exit 1 instead of an `OverflowError` traceback. Huge values in hours, minutes and weeks are refused the same way as days, and valid periods are unchanged Thanks to @draarivpatel-ui! (#108, #110)
+- `run --max-rows N` refuses a value below 0 with `status: error` and a `next_step`, exits 1, and skips estimating, running, or writing a receipt, while `--max-rows 0` stays valid. Thanks to @dianatofficial! (#119, #121)
+- Lint GV003 no longer reports a `NATURAL JOIN` (including `NATURAL LEFT`, `RIGHT` and `FULL`) as a cartesian product: it joins on the columns both tables share, so `preflight` and `run` no longer block it. Thanks to @AzalHoseinian! (#150, #163)
+- `gulliver diff` refuses unknown names in `--columns` before queries run, matching the behavior of the key check. Thanks to @dianatofficial! (#152, #168)
+- `rehearse --fractions` with a value that is not a comma-separated list of numbers (`abc`, `0.01,,0.1`) is refused with a message that names the option and shows the format, and a negative `--seed` is refused before any rung runs or a receipt is written, instead of a raw Python error or a parser error about "[removed by gulliver]". Thanks to @dianatofficial! (#151, #170)
+- An unknown `default_connection` in `gulliver.toml` is refused with `ConfigError` and the list of known connections, and `gulliver -c NAME status` refuses an unknown NAME like `preflight` does, instead of quietly using another connection. Thanks to @IG-ABHINAV! (#127, #162)
+- `receipt --list` with no match says why: `No receipts yet.` for an empty store, with a `next_step` that names the commands that write one, or `No receipts with status '...'.` with the statuses that do exist, instead of an empty line and advice to pass a receipt id that does not exist. Thanks to @dianatofficial! (#155, #172)
+- `demo --events N` refuses a value below 1 or above 50,000,000 with `status: error`, a `next_step` and exit 1, before any file is created, instead of reporting `events: -5` for an empty table. Thanks to @dianatofficial! (#112, #115)
+- `fix --verify --timezone` refuses an unknown time zone with `status: error`, a `next_step` and exit 1 before anything is rewritten or tested, instead of reporting `status: ok` with a DuckDB error inside `verify`. Zone names still match case-insensitively (`utc`, `europe/amsterdam`). Thanks to @Mr45401! (#153, #167)
+- The result guard masks connection URLs with an embedded password (`postgresql://user:password@host/db`), as a whole cell and inside free text (`[masked:credential_url]`); they count as secrets, so the default policy masks them. Thanks to @dianatofficial! (#154, #166)
+
+### Added
+- Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
 
 ## 0.4.0 - 2026-11-11
 
