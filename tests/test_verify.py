@@ -330,3 +330,139 @@ def test_a_short_time_budget_is_kept_even_when_cases_are_slow():
     verify.check(sql.replace("where ", "where a.id is not null and "), [sql], "duckdb",
                  {"t": {"columns": [{"name": "id", "type": "BIGINT"}]}}, cases=40, time_budget_s=2.0)
     assert time.monotonic() - started < 3.5
+
+
+@pytest.mark.parametrize("cases", ["0", "-5"])
+def test_cli_fix_verify_refuses_cases_below_one(capsys, cases):
+    # `cases or DEFAULT_CASES` turned 0 into 200, and a negative number reached the
+    # verifier as an empty range that reported having checked one case and passed.
+    sql = "select e.id from e where e.user_id not in (select user_id from banned)"
+    assert main(["fix", "--dialect", "duckdb", "--mode", "all", "--verify", "--cases", cases, "--json", sql]) == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "error"
+    assert cases in data["error"]
+    assert data["next_step"]
+    assert "verify" not in data
+
+
+def test_fix_refuses_cases_below_one_without_verify_ignored(capsys):
+    # --cases without --verify was ignored before and stays ignored, so the run still succeeds.
+    assert main(["fix", "--dialect", "duckdb", "--cases", "0", "--json", "select a from t1 union select a from t2"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] in ("ok", "warn")
+
+
+def test_fix_cases_below_one_through_the_function():
+    for cases in (0, -5):
+        result = fix(None, "select a from t1 union select a from t2", dialect="duckdb", verify=True, cases=cases)
+        assert result["status"] == "error"
+        assert str(cases) in result["error"]
+
+
+def _mcp_dict(res) -> dict:
+    if isinstance(res, dict) and "status" in res:
+        return res
+    if hasattr(res, "structuredContent") and res.structuredContent:
+        return res.structuredContent
+    if hasattr(res, "content") and res.content:
+        return json.loads(res.content[0].text)
+    if isinstance(res, (list, tuple)) and res:
+        for item in reversed(res):
+            if isinstance(item, dict) and "status" in item:
+                return item
+        if hasattr(res[0], "text"):
+            return json.loads(res[0].text)
+    raise AssertionError(f"unexpected MCP tool result: {res!r}")
+
+
+@pytest.mark.parametrize("bad_tz", ["Mars/Phobos", "Europe/Amstredam", "", "   "])
+def test_unknown_timezone_is_refused_before_rewrite_or_test(settings, demo_db, state, monkeypatch, capsys, tmp_path, bad_tz):
+    sql = "select count(*) from events where date_trunc('day', ts) = '2026-01-01'"
+    expect_error = f"Unknown time zone '{bad_tz}'."
+    expect_next = "Use an IANA name, for example --timezone Europe/Amsterdam."
+
+    # 1. Python functions refuse before rewriting, opening an engine, or testing
+    with monkeypatch.context() as m:
+        m.setattr(fixer, "_rewrite", lambda *a, **kw: pytest.fail("must refuse unknown timezone before rewriting"))
+        m.setattr(verify, "check", lambda *a, **kw: pytest.fail("must refuse unknown timezone before testing"))
+        m.setattr(core, "_engine", lambda *a, **kw: pytest.fail("must refuse unknown timezone before opening engine"))
+
+        vr = verify.verify_rewrite(sql, "duckdb", table_info=meta(ts="TIMESTAMP"), timezone=bad_tz)
+        assert vr == {"status": "error", "error": expect_error, "next_step": expect_next}
+
+        fx = fix(settings, sql, verify=True, timezone=bad_tz)
+        assert fx == {"status": "error", "error": expect_error, "next_step": expect_next}
+
+    chk = verify.check(sql, [sql], "duckdb", timezone=bad_tz)
+    assert chk == {"status": "error", "error": expect_error, "next_step": expect_next}
+
+    # 2. CLI refuses with exit code 1 in both human and --json mode, and does not write -o
+    out_file = tmp_path / "should_not_exist.sql"
+    assert main(["--dsn", demo_db, "fix", "--verify", "--timezone", bad_tz, "-o", str(out_file), sql]) == 1
+    human = capsys.readouterr().out
+    assert expect_error in human and expect_next in human
+    assert "fixed SQL" not in human and not out_file.exists()
+
+    assert main(["--dsn", demo_db, "fix", "--verify", "--timezone", bad_tz, "--json", sql]) == 1
+    cli_json = json.loads(capsys.readouterr().out)
+    assert cli_json == {"status": "error", "error": expect_error, "next_step": expect_next}
+
+    # 3. MCP gulliver_fix refuses with status="error" before rewriting or testing
+    monkeypatch.setenv("GULLIVER_DSN", demo_db)
+    server = build_server()
+    mcp_res = _mcp_dict(asyncio.run(server.call_tool(
+        "gulliver_fix", {"sql": sql, "verify": True, "timezone": bad_tz}
+    )))
+    assert mcp_res["status"] == "error"
+    assert mcp_res["error"] == expect_error
+    assert mcp_res["next_step"] == expect_next
+    assert "fixed_sql" not in mcp_res and "changes" not in mcp_res
+
+
+@pytest.mark.parametrize("zone", [None, "UTC", "utc", "Europe/Amsterdam", "europe/amsterdam", "America/Santiago"])
+def test_valid_and_omitted_timezones_work_across_surfaces(settings, demo_db, state, monkeypatch, capsys, zone):
+    sql = "select count(*) from events where date_trunc('day', ts) = '2025-01-02'"
+
+    vr = verify.verify_rewrite(sql, "duckdb", table_info={"events": {"columns": [{"name": "ts", "type": "TIMESTAMP"}]}},
+                               cases=20, timezone=zone)
+    assert vr["verify"]["status"] == "ok"
+    assert vr["changes"][0]["verified_on_generated_data"]["cases"] == 20
+
+    fx = fix(settings, sql, verify=True, cases=20, timezone=zone)
+    assert fx["status"] == "ok" and fx["same_result"] is True
+    assert fx["changes"][0]["verified_on_generated_data"]["cases"] == 20
+
+    cli_args = ["--dsn", demo_db, "fix", "--verify", "--cases", "20"]
+    if zone is not None:
+        cli_args += ["--timezone", zone]
+    cli_args.append(sql)
+    assert main(cli_args) == 0
+    text = capsys.readouterr().out
+    assert "tested: no difference found in 20 generated cases" in text
+
+    monkeypatch.setenv("GULLIVER_DSN", demo_db)
+    server = build_server()
+    mcp_args: dict = {"sql": sql, "verify": True, "cases": 20}
+    if zone is not None:
+        mcp_args["timezone"] = zone
+    mcp_res = _mcp_dict(asyncio.run(server.call_tool("gulliver_fix", mcp_args)))
+    assert mcp_res["status"] == "ok"
+    assert mcp_res["changes"][0]["verified_on_generated_data"]["cases"] == 20
+
+
+def test_timezone_without_verify_is_unchanged(settings, demo_db, state, monkeypatch, capsys):
+    sql = "select count(*) from events where date_trunc('day', ts) = '2025-01-02'"
+
+    fx = fix(settings, sql, verify=False, timezone="Mars/Phobos")
+    assert fx["status"] == "ok" and fx["changes"] and "verify" not in fx
+
+    assert main(["--dsn", demo_db, "fix", "--timezone", "Mars/Phobos", "--json", sql]) == 0
+    cli_json = json.loads(capsys.readouterr().out)
+    assert cli_json["status"] == "ok" and cli_json["changes"] and "verify" not in cli_json
+
+    monkeypatch.setenv("GULLIVER_DSN", demo_db)
+    server = build_server()
+    mcp_res = _mcp_dict(asyncio.run(server.call_tool(
+        "gulliver_fix", {"sql": sql, "verify": False, "timezone": "Mars/Phobos"}
+    )))
+    assert mcp_res["status"] == "ok" and mcp_res["changes"] and "verify" not in mcp_res

@@ -44,6 +44,27 @@ def test_positions_on_a_multi_line_file(tmp_path):
     assert found["GV003"].severity == "error"
 
 
+def test_null_comparison_file_position_and_ignore(tmp_path):
+    sql = "select event_id\nfrom events\nwhere amount = NULL\nlimit 5;\n"
+    path = _write(tmp_path / "q.sql", sql)
+    finding, = lint_file(path).findings
+    assert (finding.rule, finding.line, finding.col) == ("GV020", 3, 7)
+    _write(path, sql.replace("amount = NULL", "amount = NULL -- gulliver: ignore GV020"))
+    result = lint_file(path, warn_unused_ignores=True)
+    assert result.findings == []
+    assert [f.rule for f in result.ignored] == ["GV020"]
+
+
+def test_null_comparison_config_disable_and_severity(tmp_path):
+    path = _write(tmp_path / "q.sql", "select event_id from events where amount != NULL limit 5")
+    config = lint_config_from_mapping({"disable": ["GV020"]})
+    assert lint_file(path, config=config).findings == []
+    config = lint_config_from_mapping({"severity": {"null-comparison": "error"}})
+    result = lint_paths([str(path)], config=config)
+    assert result["status"] == "block"
+    assert result["counts"]["error"] == 1
+
+
 def test_multi_statement_file_splits_on_real_semicolons_only(tmp_path):
     f = _write(tmp_path / "q.sql", "select 'a;b' as x from t limit 1;\n-- note; not a split\n"
                                    "select y from t order by y;\ndrop table t;\ncreate table s as select * from t\n")
@@ -635,3 +656,17 @@ def test_write_baseline_without_any_path_is_refused(state, tmp_path, capsys):
 def test_lint_baseline_key_must_be_a_path():
     with pytest.raises(ConfigError):
         lint_config_from_mapping({"baseline": 3})
+
+
+@pytest.mark.parametrize("sql", ["SELECT 1 FROM", "SELECT a b c FROM t", "SELECT 'abc"])
+def test_file_syntax_errors_have_readable_messages(tmp_path, sql):
+    result = lint_file(_write(tmp_path / "bad.sql", sql))
+    finding, = [f for f in result.findings if f.rule == "GV900"]
+    assert "line 1, column " in finding.message
+    assert "<Token" not in finding.message and "TokenType" not in finding.message
+    assert finding.fix == (
+        "Fix the syntax error and try again. If the SQL is for another engine, set --dialect."
+    )
+    if sql == "SELECT 'abc":
+        assert (finding.line, finding.col) == (1, len(sql) + 1)
+        assert "end of input" in finding.message
