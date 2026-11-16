@@ -83,6 +83,43 @@ def test_impact_cli(models, capsys):
     assert "country_report" in capsys.readouterr().out
 
 
+def test_empty_models_folder_refused_by_impact_and_lineage(tmp_path, capsys):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    for fn in (lambda: features.impact("raw.users.id", str(empty)),
+               lambda: features.lineage_overview(str(empty))):
+        res = fn()
+        assert res["status"] == "error"
+        assert f"No .sql files found in models folder: {empty}" == res["error"]
+        assert "Check the path, or pass --manifest path/to/manifest.json for dbt." in res["next_step"]
+
+    assert main(["impact", "raw.users.id", "--models", str(empty)]) == 1
+    assert "No .sql files found in models folder" in capsys.readouterr().out
+    assert main(["lineage", "--models", str(empty)]) == 1
+    assert "No .sql files found in models folder" in capsys.readouterr().out
+
+
+def test_models_plus_manifest_with_only_one_having_models(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    manifest_file = tmp_path / "manifest.json"
+    manifest_file.write_text(
+        '{"nodes": {"model.pkg.m": {"resource_type": "model", "name": "m", "raw_code": "select 1 as id"}}}',
+        encoding="utf-8",
+    )
+
+    res = features.impact("m", models_dir=str(empty), manifest=str(manifest_file))
+    assert res["status"] == "ok"
+
+    empty_manifest = tmp_path / "empty_manifest.json"
+    empty_manifest.write_text('{"nodes": {}}', encoding="utf-8")
+    err = features.impact("m", models_dir=str(empty), manifest=str(empty_manifest))
+    assert err["status"] == "error"
+    assert "No .sql files found in models folder" in err["error"]
+
+
 # -- drift -------------------------------------------------------------------------------------------
 def test_drift_detects_removed_column_and_impact(tmp_path, state, models):
     db = tmp_path / "w.duckdb"
@@ -107,6 +144,31 @@ def test_drift_detects_removed_column_and_impact(tmp_path, state, models):
     saved = features.drift(s, save=True)
     assert saved["saved"] is True
     assert features.drift(s)["changes"] == []
+
+
+def test_empty_models_folder_refused_by_drift(tmp_path, state, capsys):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    db = tmp_path / "drift_empty.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("create table t as select 1 as id")
+    con.close()
+    s = load_settings(dsn=str(db))
+
+    res = features.drift(s, models_dir=str(empty))
+    assert res["status"] == "error"
+    assert f"No .sql files found in models folder: {empty}" == res["error"]
+    assert "Check the path, or pass --manifest path/to/manifest.json for dbt." in res["next_step"]
+
+    snap = features.drift(s)
+    assert snap["status"] == "ok"
+
+    res_after = features.drift(s, models_dir=str(empty))
+    assert res_after["status"] == "error"
+    assert "No .sql files found in models folder" in res_after["error"]
+
+    assert main(["drift", "--models", str(empty), "--dsn", str(db)]) == 1
+    assert "No .sql files found in models folder" in capsys.readouterr().out
 
 
 # -- translate ---------------------------------------------------------------------------------------
@@ -169,6 +231,32 @@ def test_diff_identical(settings):
     r = features.diff(settings, "users", "select user_id, country, signup_date from users", ["user_id"])
     assert r["status"] == "ok" and r["identical"] is True
     assert r["left_rows"] == r["right_rows"] == 20_000
+
+
+def test_diff_unknown_column_refused(settings, capsys):
+    r = features.diff(settings, "users", "select user_id, country, signup_date from users", ["user_id"],
+                      columns=["country", "nosuch"])
+    assert r["status"] == "error"
+    assert r["error"] == "Column(s) not in both results: nosuch"
+    assert r["next_step"] == "Pick columns that both queries return."
+
+    r_right_missing = features.diff(settings, "users", "select user_id, signup_date from users", ["user_id"],
+                                    columns=["country"])
+    assert r_right_missing["status"] == "error"
+    assert r_right_missing["error"] == "Column(s) not in both results: country"
+
+    dsn = str(settings.connection("default").params["path"])
+    exit_code = main(["diff", "--dsn", dsn, "--left", "users", "--right", "users",
+                      "--key", "user_id", "--columns", "country,nosuch"])
+    assert exit_code == 1
+    assert "Column(s) not in both results: nosuch" in capsys.readouterr().out
+
+
+def test_diff_columns_mixed_case(settings):
+    r = features.diff(settings, "users", "select user_id, country, signup_date from users", ["user_id"],
+                      columns=["COUNTRY"])
+    assert r["status"] == "ok" and r["identical"] is True
+    assert r["columns_compared"] == ["country"]
 
 
 def test_diff_finds_missing_extra_changed(settings):
@@ -290,6 +378,51 @@ def test_incremental_append_dbt_uses_this(settings):
     assert "unique_key='event_id'" in r["dbt_model"]
 
 
+def test_incremental_refuses_an_unknown_time_column(settings):
+    r = features.incremental(settings, "select user_id, count(*) as n from events group by 1",
+                             time_column="nosuch")
+    assert r["status"] == "error"
+    assert r["error"] == "Time column 'nosuch' is not a column of events."
+    assert "ts" in r["next_step"]
+    assert "incremental_sql" not in r
+
+
+def test_incremental_refuses_an_unknown_unique_key(settings):
+    r = features.incremental(settings, "select user_id, max(ts) as last_ts, count(*) as n from events group by 1",
+                             time_column="ts", unique_key=["user_id", "nosuch"])
+    assert r["status"] == "error"
+    assert r["error"] == "Unique key column(s) not returned by the model: nosuch"
+    assert "user_id, last_ts, n" in r["next_step"]
+
+
+def test_incremental_names_are_compared_case_insensitively(settings):
+    sql = "select user_id, max(ts) as last_ts, count(*) as n from events group by 1"
+    r = features.incremental(settings, sql, time_column="TS", unique_key=["USER_ID"], estimate_savings=False)
+    assert r["status"] == "ok"
+    assert r["strategy"] == "merge_recompute"
+
+
+def test_incremental_valid_names_give_the_same_advice_as_before(settings):
+    sql = "select user_id, max(ts) as last_ts, count(*) as n from events group by 1"
+    checked = features.incremental(settings, sql, time_column="ts", unique_key=["user_id"], estimate_savings=False)
+    offline = features.incremental(None, sql, time_column="ts", unique_key=["user_id"], estimate_savings=False)
+    assert checked == offline
+
+
+def test_incremental_without_a_connection_cannot_check_names():
+    r = features.incremental(None, "select user_id, count(*) as n from events group by 1",
+                             time_column="nosuch", unique_key=["nosuch"])
+    assert r["status"] == "ok"
+    assert "dbt_model" in r
+
+
+def test_incremental_notes_when_the_model_cannot_be_run_to_read_its_columns(settings):
+    r = features.incremental(settings, "select user_id, count(*) as n from events_that_do_not_exist group by 1",
+                             time_column="ts", unique_key=["nosuch"], estimate_savings=False)
+    assert r["status"] == "ok"
+    assert any("--unique-key was not checked" in n for n in r["notes"])
+
+
 def test_parse_period():
     assert incremental.parse_period("24h").total_seconds() == 86400
     with pytest.raises(ValueError):
@@ -330,6 +463,22 @@ def test_check_reports_a_bad_range_before_querying(settings):
     r = features.check(settings, "events", ranges=["amount=100:1"])
     assert r["status"] == "error"
     assert "min 100 > max 1" in r["error"]
+
+
+def test_malformed_check_options_name_the_flag_and_show_an_example(settings):
+    generic = "Fix the problem above and try again."
+    fresh = features.check(settings, "events", fresh=["ts"])
+    assert fresh["status"] == "error" and "--fresh" in fresh["error"]
+    assert "col=age" in fresh["next_step"] and fresh["next_step"] != generic
+    rng = features.check(settings, "events", ranges=["amount"])
+    assert rng["status"] == "error" and "--range" in rng["error"]
+    assert "amount=0:1000" in rng["next_step"] and rng["next_step"] != generic
+    acc = features.check(settings, "events", accepted=["event_type"])
+    assert acc["status"] == "error" and "--accepted" in acc["error"]
+    assert "status=new|paid" in acc["next_step"] and acc["next_step"] != generic
+    bad_period = features.incremental(None, "SELECT 1 AS ts", period="abc")
+    assert bad_period["status"] == "error" and "--period" in bad_period["error"]
+    assert "--period 1d" in bad_period["next_step"] and bad_period["next_step"] != generic
 
 
 def test_check_row_count_change(settings):

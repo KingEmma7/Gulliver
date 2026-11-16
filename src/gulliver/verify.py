@@ -22,6 +22,7 @@ budget gate applies: it costs nothing but a little local CPU.
 
 from __future__ import annotations
 
+import functools
 import random
 import re
 import threading
@@ -43,7 +44,29 @@ DEFAULT_CASES = 200
 QUICK_CASES = 40            # preflight's autofix check: a few cases, a short time budget
 SIZES = (0, 1, 2, 3, 5, 8, 13, 50)
 ZONES = ("UTC", "Europe/Amsterdam", "Atlantic/Azores", "America/Santiago", "Asia/Kolkata")
+TIMEZONE_NEXT_STEP = "Use an IANA name, for example --timezone Europe/Amsterdam."
 QUERY_TIMEOUT_S = 5.0
+
+
+@functools.lru_cache(maxsize=1)
+def _timezones() -> frozenset[str]:
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute("SET enable_external_access = false")
+        con.execute("SET lock_configuration = true")
+        return frozenset(r[0].casefold() for r in con.execute("SELECT name FROM pg_timezone_names()").fetchall())
+    finally:
+        con.close()
+
+
+def valid_timezone(timezone: str) -> bool:
+    return isinstance(timezone, str) and timezone.casefold() in _timezones()
+
+
+def timezone_error(timezone: str) -> dict[str, Any]:
+    return {"status": "error", "error": f"Unknown time zone '{timezone}'.", "next_step": TIMEZONE_NEXT_STEP}
+
+
 SEMANTICS = "DuckDB semantics"
 NOT_TESTED = {
     "GV002": "a LIMIT changes the result on purpose; there is nothing to test",
@@ -870,6 +893,8 @@ def check(original: str, candidates: list[str], dialect: str = "duckdb", table_i
 
     Returns {"status", "cases", "results": [{cases, counterexamples, by_type?, counterexample?} per candidate],
     ...}. Status "skipped" (with "reason") when the query cannot be tested fairly."""
+    if timezone is not None and not valid_timezone(timezone):
+        return timezone_error(timezone)
     started = time.monotonic()
     cases = max(1, int(cases))
     base: dict[str, Any] = {"engine": "duckdb", "semantics": SEMANTICS, "seed": seed}
@@ -972,6 +997,8 @@ def verify_rewrite(sql: str, dialect: str = "duckdb", mode: str = "safe", limit:
                    timezone: str | None = None, time_budget_s: float = 30.0) -> dict[str, Any]:
     """fixer.rewrite(), with every change tested on generated data. A `same` change with a counterexample
     is dropped (listed in `dropped`); other labels never change, they only gain the test result."""
+    if timezone is not None and not valid_timezone(timezone):
+        return timezone_error(timezone)
     result, offered = fixer._rewrite(sql, dialect, mode, limit, table_info)
     if result.get("status") == "block" or not offered:
         if result.get("status") != "block":
