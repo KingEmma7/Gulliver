@@ -168,6 +168,10 @@ def test_gv005_contextual_fix_advice(dialect):
     assert fix_mul == "Move the calculation to the constant side, e.g. amount > 100 / 1.2 instead of amount * 1.2 > 100."
     assert "ts" not in fix_mul
 
+    fix_cmp_left = get_fix("select a from t where 100 < amount * 1.2 limit 5")
+    assert fix_cmp_left == "Move the calculation to the constant side, e.g. amount > 100 / 1.2 instead of 100 < amount * 1.2."
+    assert "ts" not in fix_cmp_left
+
     fix_add = get_fix("select a from t where amount + 5 > 100 limit 5")
     assert fix_add == "Move the calculation to the constant side, e.g. amount > 100 - 5 instead of amount + 5 > 100."
     assert "ts" not in fix_add
@@ -179,6 +183,14 @@ def test_gv005_contextual_fix_advice(dialect):
     fix_div = get_fix("select a from t where amount / 2 > 10 limit 5")
     assert fix_div == "Move the calculation to the constant side, e.g. amount > 10 * 2 instead of amount / 2 > 10."
     assert "ts" not in fix_div
+
+    fix_non_comm = get_fix("select a from t where 5 - amount > 100 limit 5")
+    assert fix_non_comm == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_non_comm
+
+    fix_neg = get_fix("select a from t where amount * -2 > 100 limit 5")
+    assert fix_neg == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_neg
 
     # 3. Case or trim function
     fix_case = get_fix("select a from t where upper(user_name) like 'A%' limit 5")

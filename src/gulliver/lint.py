@@ -221,6 +221,34 @@ def _gv005_fix(
 
     # 2. Arithmetic with constants (+ - * /)
     if isinstance(operand, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        this_cols = list(operand.this.find_all(exp.Column))
+        expr_cols = list(operand.expression.find_all(exp.Column))
+        if this_cols and not expr_cols:
+            col_on_right = False
+            arith_const_node = operand.expression
+        elif expr_cols and not this_cols:
+            col_on_right = True
+            arith_const_node = operand.this
+        else:
+            return "Move the calculation to the constant side of the comparison."
+
+        if col_on_right and isinstance(operand, (exp.Sub, exp.Div)):
+            return "Move the calculation to the constant side of the comparison."
+
+        if arith_const_node is None:
+            return "Move the calculation to the constant side of the comparison."
+
+        const_val_node = arith_const_node.unnest()
+        if not isinstance(const_val_node, exp.Literal) or not const_val_node.is_number:
+            return "Move the calculation to the constant side of the comparison."
+
+        try:
+            val = float(const_val_node.this)
+            if val <= 0:
+                return "Move the calculation to the constant side of the comparison."
+        except (ValueError, TypeError):
+            return "Move the calculation to the constant side of the comparison."
+
         op_map = {
             exp.Add: ("+", "-"),
             exp.Sub: ("-", "+"),
@@ -228,8 +256,7 @@ def _gv005_fix(
             exp.Div: ("/", "*"),
         }
         op, inv_op = op_map[type(operand)]
-        arith_const_node = operand.expression if list(operand.this.find_all(exp.Column)) else operand.this
-        arith_const_sql = arith_const_node.sql(dialect=dialect) if arith_const_node is not None else "1.2"
+        arith_const_sql = arith_const_node.sql(dialect=dialect)
 
         cmp_op_map = {
             exp.GT: ">",
@@ -252,12 +279,12 @@ def _gv005_fix(
         cmp_const_sql = cmp_const_node.sql(dialect=dialect) if cmp_const_node is not None else "100"
 
         if is_col_left:
-            orig = f"{column_sql} {op} {arith_const_sql} {cmp_op_str} {cmp_const_sql}"
+            orig = f"{operand.sql(dialect=dialect)} {cmp_op_str} {cmp_const_sql}"
             rewrite = f"{column_sql} {cmp_op_str} {cmp_const_sql} {inv_op} {arith_const_sql}"
         else:
             flip = {">": "<", ">=": "<=", "<": ">", "<=": ">=", "=": "=", "<>": "<>"}
             flipped_op = flip.get(cmp_op_str, cmp_op_str)
-            orig = f"{cmp_const_sql} {cmp_op_str} {column_sql} {op} {arith_const_sql}"
+            orig = f"{cmp_const_sql} {cmp_op_str} {operand.sql(dialect=dialect)}"
             rewrite = f"{column_sql} {flipped_op} {cmp_const_sql} {inv_op} {arith_const_sql}"
 
         return f"Move the calculation to the constant side, e.g. {rewrite} instead of {orig}."
