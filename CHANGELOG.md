@@ -19,9 +19,11 @@
 - `fix --verify --timezone` refuses an unknown time zone with `status: error`, a `next_step` and exit 1 before anything is rewritten or tested, instead of reporting `status: ok` with a DuckDB error inside `verify`. Zone names still match case-insensitively (`utc`, `europe/amsterdam`). Thanks to @Mr45401! (#153, #167)
 - The result guard masks connection URLs with an embedded password (`postgresql://user:password@host/db`), as a whole cell and inside free text (`[masked:credential_url]`); they count as secrets, so the default policy masks them. Thanks to @dianatofficial! (#154, #166)
 - `incremental` refuses a `--time-column` or `--unique-key` that is not a column of the source or the model, with `status: error`, a `next_step` that lists the columns, and exit 1, instead of generating a model that uses it. Thanks to @Ipsita-Mondal-30! (#157, #165)
+- `check --fresh`, `--range`, `--accepted` and `incremental --period` with a malformed value name the option in the message and show a working example in `next_step`, instead of the generic message. Thanks to @deshmukh-viraj! (#123, #146)
 
 ### Added
 - Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
+- Lint rule GV019 `having-on-group-column` (info, no autofix): flags a `HAVING` condition that uses only GROUP BY columns, since it filters after the aggregation and could move to `WHERE`. Aggregates, `GROUP BY`-less queries, `ROLLUP`/`CUBE`/`GROUPING SETS`, subqueries and `random()` are not flagged. Thanks to @Ipsita-Mondal-30! (#125, #186)
 
 ## 0.4.0 - 2026-11-11
 
