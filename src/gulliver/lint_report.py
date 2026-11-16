@@ -73,6 +73,10 @@ RULE_DOCS: dict[str, tuple[str, str, str, str]] = {
     "GV018": ("info", "A subquery counts every matching row only to compare the count with zero. EXISTS can stop "
                       "at the first match, and Postgres does not turn one into the other.",
               "Use EXISTS (SELECT 1 FROM ...), or NOT EXISTS for `= 0` and `< 1`.", "none"),
+    "GV019": ("info", "A HAVING condition that uses only GROUP BY columns and no aggregate filters after the "
+                      "aggregation, so every group is built first and most are thrown away. Some engines move "
+                      "it themselves, others do not.",
+              "Move it to WHERE: the engine then filters rows before it groups them.", "none"),
     "GV020": ("warn", "An equality or inequality comparison with literal NULL gives NULL, never true.",
               "Use IS NULL / IS NOT NULL (or IS NOT DISTINCT FROM if you want NULL = NULL to match).", "none"),
     "GV900": ("warn", "Gulliver could not parse a statement (dialect, or dbt Jinja it cannot render), so it was not "

@@ -36,6 +36,7 @@ RULES = {
     "GV016": "order-by-random",
     "GV017": "deep-offset",
     "GV018": "count-for-existence",
+    "GV019": "having-on-group-column",
     "GV020": "null-comparison",
 }
 
@@ -99,6 +100,63 @@ def _join_condition(join: exp.Join) -> exp.Expression | None:
 
 def _aliases_in(expr: exp.Expression) -> set[str]:
     return {col.table.lower() for col in expr.find_all(exp.Column) if col.table}
+
+
+def _and_parts(node: exp.Expression) -> list[exp.Expression]:
+    """The top-level AND parts of a condition, looking through parentheses."""
+    node = node.unnest()
+    if isinstance(node, exp.And):
+        return _and_parts(node.this) + _and_parts(node.expression)
+    return [node]
+
+
+def _having_on_group_column(select: exp.Select) -> exp.Expression | None:
+    """The first top-level HAVING condition that could move to WHERE, or None.
+
+    It must come from a plain GROUP BY (not ROLLUP, CUBE or GROUPING SETS), use no aggregate, window,
+    subquery or random function, and reference only GROUP BY columns (or a grouped expression written
+    the same way). Without a GROUP BY, HAVING works on one global group, so WHERE is not the same."""
+    group, having = select.args.get("group"), select.args.get("having")
+    if group is None or having is None:
+        return None
+    if any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
+        return None
+    grouped: list[exp.Expression] = []
+    for item in group.expressions:
+        if isinstance(item, exp.Literal) and item.is_int:
+            position = int(item.this)
+            if not 1 <= position <= len(select.expressions):
+                return None
+            item = select.expressions[position - 1]
+            item = item.this if isinstance(item, exp.Alias) else item
+        grouped.append(item)
+    names = {g.name.lower() for g in grouped if isinstance(g, exp.Column)}
+    expressions = [g for g in grouped if not isinstance(g, exp.Column)]
+    # A select alias of an aggregate that shares a name with a grouping column makes the name ambiguous.
+    aggregate_aliases = {p.alias.lower() for p in select.expressions
+                         if isinstance(p, exp.Alias) and p.find(*AGG_TYPES, exp.Window) is not None}
+
+    def grouped_column(column: exp.Column, part: exp.Expression) -> bool:
+        if column.name.lower() in aggregate_aliases:
+            return False
+        if column.name.lower() in names:
+            return True
+        node = column.parent
+        while node is not None:
+            if any(node == g for g in expressions):
+                return True
+            if node is part:
+                break
+            node = node.parent
+        return False
+
+    for part in _and_parts(having.this):
+        if part.find(*AGG_TYPES, exp.Window, exp.Subquery, exp.Select, exp.Rand) is not None:
+            continue
+        columns = list(part.find_all(exp.Column))
+        if columns and all(grouped_column(c, part) for c in columns):
+            return part
+    return None
 
 
 def _on_link(on: exp.Expression) -> str:
@@ -270,6 +328,14 @@ def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
             add("GV018", "info",
                 "A subquery counts every matching row only to test that the count is zero.",
                 "Use NOT EXISTS (SELECT 1 FROM ...): it can stop at the first match.", comparison)
+
+    # GV019 having-on-group-column: a HAVING condition on grouping columns only filters after the aggregation
+    for select in tree.find_all(exp.Select):
+        part = _having_on_group_column(select)
+        if part is not None:
+            add("GV019", "info",
+                "This HAVING condition uses only GROUP BY columns, so it filters after the aggregation.",
+                "Move it to WHERE: the engine then filters rows before it groups them.", part)
 
     # GV020 null-comparison: equality/inequality with a literal NULL is never true.
     for comparison in tree.find_all(exp.EQ, exp.NEQ):
