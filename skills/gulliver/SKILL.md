@@ -81,6 +81,10 @@ and returns a counterexample when rows differ; a test is not a proof, so labels 
 | GV014 sensitive-column-in-output | leave the column out, or aggregate it (`COUNT(email)` is fine) |
 | GV015 fan-trap | aggregate the many side in a subquery first, then join |
 | GV016 order-by-random | for random row sampling, consider TABLESAMPLE / USING SAMPLE; check engine semantics |
+| GV020 null-comparison | use `IS NULL` / `IS NOT NULL`, or `IS NOT DISTINCT FROM` for NULL-safe equality; no autofix because results change |
+
+Syntax failures stay blocked. Read the line/column in `statement.reason`, fix the syntax or choose the
+correct `--dialect`, then retry. Tokenizer failures explicitly mark their location as end-of-input fallback.
 
 ## Reading the numbers honestly
 
@@ -94,3 +98,6 @@ and returns a counterexample when rows differ; a test is not a proof, so labels 
 Connections and budgets live in `gulliver.toml` (see `gulliver.example.toml` in the repo) or in environment
 variables such as `GULLIVER_DSN=warehouse.duckdb`. Try it with `gulliver demo`, which builds a 5-million-row
 DuckDB file.
+
+If a config error says a section "must be a table", use a TOML section such as `[budget]` with keys,
+rather than a plain value such as `budget = 3`. Fix the named section before retrying.

@@ -336,7 +336,9 @@ agent_day_usd = 5           # per agent per day (optional)
 The example file also shows the settings for the read-only gate (`allowed_paths`, `allow_remote`,
 `allow_functions`), the result guard (`policy`), the runaway guard, `[lint]`, `[review]` and `[approval]`.
 An unknown top-level key or section is refused, so a typo such as `[budjet]` cannot silently fall back to the
-default budget.
+default budget. Sections such as `[budget]`, `[connections.local]`, `[approval]`, `[lint]` and `[review]`
+must be TOML tables. A value such as `budget = 3` produces a configuration error naming the section,
+with exit code 1 and advice to fix `gulliver.toml` or the flags.
 
 ### A read-only Postgres role
 
@@ -662,7 +664,7 @@ Every `gulliver_run` preview is checked before the agent or the receipt on disk 
 
 - **Sensitive columns** by name (`email`, `iban`, `card_number`, `password`, `api_key`, Dutch names too),
   through your SQL (aliases, CTEs, `SELECT *`, a whole row as one value), and by validated value patterns
-  (email, phone, IBAN mod-97, Luhn card numbers, BSN 11-check, IP, JWT, API-key shapes).
+  (email, phone, IBAN mod-97, Luhn card numbers, BSN 11-check, IP, JWT, API-key shapes, connection URLs with passwords).
 - **Untrusted envelope.** The result has `untrusted: true`. Text that reads like instructions to an AI ("ignore
   previous instructions", `gulliver_*` tool names, hidden Unicode, base64) is listed in `injection` and
   `data_warnings`.
@@ -724,6 +726,10 @@ Fixes are applied as small text edits (comments, line endings and Jinja stay) an
 edited statement re-parses to exactly the rewritten tree. Details:
 [docs/features/lint-ci.md](https://github.com/laaielichter/Gulliver/blob/main/docs/features/lint-ci.md).
 
+SQL syntax errors include readable line/column diagnostics and syntax-specific retry advice.
+Tokenizer failures use an explicitly labeled end-of-input fallback. See the
+[syntax-error guide](docs/features/lint-ci.md#sql-syntax-errors).
+
 ### `gulliver review` and the GitHub Action
 
 ```bash
@@ -779,6 +785,7 @@ The action posts one PR comment and updates it on every push, writes the job sum
 | GV016 | order-by-random | warn |
 | GV017 | deep-offset | warn |
 | GV018 | count-for-existence | info |
+| GV020 | null-comparison | warn |
 | GV900 | parse-error (file lint only) | warn |
 | GV901 | unused-ignore (an unreadable or unused `gulliver: ignore`) | warn |
 

@@ -261,6 +261,10 @@ def diff(settings: Settings, left_sql: str, right_sql: str, key: list[str], conn
                 return _error(f"Key column(s) not in both results: {', '.join(missing_key)}",
                               "Pick key columns that both queries return.")
             if columns:
+                missing_columns = [c for c in columns if c.lower() not in lcols or c.lower() not in rcols]
+                if missing_columns:
+                    return _error(f"Column(s) not in both results: {', '.join(missing_columns)}",
+                                  "Pick columns that both queries return.")
                 compare_cols = [c.lower() for c in columns]
             else:
                 compare_cols = sorted(set(lcols) & set(rcols))
@@ -379,6 +383,12 @@ def incremental(settings: Settings | None, sql: str, connection: str | None = No
     if advice["strategy"] == "not_safe":
         result["next_step"] = "Keep the full rebuild: " + "; ".join(advice["reasons"])
         return result
+    if settings is not None:
+        refusal, notes = _check_incremental_names(settings, connection, rendered, advice, time_column, unique_key)
+        if refusal is not None:
+            return refusal
+        if notes:
+            result["notes"] = [*advice.get("notes", []), *notes]
     if settings is not None and estimate_savings and advice.get("time_column_source"):
         try:
             result["savings"] = _savings(settings, connection, advice, dialect)
@@ -389,6 +399,57 @@ def incremental(settings: Settings | None, sql: str, connection: str | None = No
     result["next_step"] = ("Review the generated SQL, then prove it with gulliver_diff: compare the full model "
                            "with the incremental result for the same period.")
     return result
+
+
+def _check_incremental_names(settings: Settings, connection: str | None, sql: str, advice: dict[str, Any],
+                             time_column: str | None, unique_key: list[str] | None
+                             ) -> tuple[dict[str, Any] | None, list[str]]:
+    """Refuse a --time-column or --unique-key that the database does not have.
+
+    Reads only column names (LIMIT 0) through the guarded path. When the columns cannot be read (a table
+    that is not there, a model that does not run as plain SQL), the check is skipped and a note says so.
+    """
+    keys = [k for k in (unique_key or []) if k]
+    source = advice.get("time_column_source")
+    check_time = bool(time_column) and bool(source)
+    if not check_time and not keys:
+        return None, []
+    notes: list[str] = []
+
+    def columns_of(engine: Engine, conn_name: str, query: str) -> list[str] | None:
+        try:
+            return _gated_run(settings, conn_name, engine, f"SELECT * FROM {query} LIMIT 0", "incremental",
+                              preview_rows=0, ignore_rules=frozenset({"GV004"}))["columns"]
+        except (Blocked, EngineError):
+            return None
+
+    try:
+        with _engine(settings, connection) as (conn, engine):
+            if check_time:
+                source_cols = columns_of(engine, conn.name, source)
+                wanted = str(time_column).split(".")[-1]
+                if source_cols is None:
+                    notes.append(f"Could not read the columns of {source}, so --time-column was not checked.")
+                elif wanted.lower() not in {c.lower() for c in source_cols}:
+                    stamps = [c for c in source_cols if incr.TIME_NAME.search(c)]
+                    hint = (f"Timestamp-like columns of {source}: {', '.join(stamps)}." if stamps
+                            else f"Columns of {source}: {', '.join(source_cols)}.")
+                    return _error(f"Time column '{wanted}' is not a column of {source}.",
+                                  f"{hint} Pass --time-column with one of them."), notes
+            if keys:
+                model_cols = columns_of(engine, conn.name, f"({sql.strip().rstrip(';')}) AS gv_model")
+                if model_cols is None:
+                    notes.append("Could not run the model to read its columns, so --unique-key was not checked.")
+                else:
+                    have = {c.lower() for c in model_cols}
+                    missing = [k for k in keys if k.lower() not in have]
+                    if missing:
+                        return _error(f"Unique key column(s) not returned by the model: {', '.join(missing)}",
+                                      f"The model returns: {', '.join(model_cols)}. Pass --unique-key with "
+                                      "names from that list."), notes
+    except (EngineError, ConfigError):
+        notes.append("Could not connect to read column names, so --time-column and --unique-key were not checked.")
+    return None, notes
 
 
 def _savings(settings: Settings, connection: str | None, advice: dict[str, Any], dialect: str) -> dict[str, Any]:

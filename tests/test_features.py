@@ -233,6 +233,32 @@ def test_diff_identical(settings):
     assert r["left_rows"] == r["right_rows"] == 20_000
 
 
+def test_diff_unknown_column_refused(settings, capsys):
+    r = features.diff(settings, "users", "select user_id, country, signup_date from users", ["user_id"],
+                      columns=["country", "nosuch"])
+    assert r["status"] == "error"
+    assert r["error"] == "Column(s) not in both results: nosuch"
+    assert r["next_step"] == "Pick columns that both queries return."
+
+    r_right_missing = features.diff(settings, "users", "select user_id, signup_date from users", ["user_id"],
+                                    columns=["country"])
+    assert r_right_missing["status"] == "error"
+    assert r_right_missing["error"] == "Column(s) not in both results: country"
+
+    dsn = str(settings.connection("default").params["path"])
+    exit_code = main(["diff", "--dsn", dsn, "--left", "users", "--right", "users",
+                      "--key", "user_id", "--columns", "country,nosuch"])
+    assert exit_code == 1
+    assert "Column(s) not in both results: nosuch" in capsys.readouterr().out
+
+
+def test_diff_columns_mixed_case(settings):
+    r = features.diff(settings, "users", "select user_id, country, signup_date from users", ["user_id"],
+                      columns=["COUNTRY"])
+    assert r["status"] == "ok" and r["identical"] is True
+    assert r["columns_compared"] == ["country"]
+
+
 def test_diff_finds_missing_extra_changed(settings):
     right = ("select user_id, case when user_id = 7 then 'XX' else country end as country, signup_date "
              "from users where user_id <> 5 union all select 999999, 'NL', date '2020-01-01'")
@@ -350,6 +376,51 @@ def test_incremental_append_dbt_uses_this(settings):
                              unique_key=["event_id"], estimate_savings=False)
     assert "(SELECT MAX(ts) FROM {{ this }})" in r["dbt_model"]
     assert "unique_key='event_id'" in r["dbt_model"]
+
+
+def test_incremental_refuses_an_unknown_time_column(settings):
+    r = features.incremental(settings, "select user_id, count(*) as n from events group by 1",
+                             time_column="nosuch")
+    assert r["status"] == "error"
+    assert r["error"] == "Time column 'nosuch' is not a column of events."
+    assert "ts" in r["next_step"]
+    assert "incremental_sql" not in r
+
+
+def test_incremental_refuses_an_unknown_unique_key(settings):
+    r = features.incremental(settings, "select user_id, max(ts) as last_ts, count(*) as n from events group by 1",
+                             time_column="ts", unique_key=["user_id", "nosuch"])
+    assert r["status"] == "error"
+    assert r["error"] == "Unique key column(s) not returned by the model: nosuch"
+    assert "user_id, last_ts, n" in r["next_step"]
+
+
+def test_incremental_names_are_compared_case_insensitively(settings):
+    sql = "select user_id, max(ts) as last_ts, count(*) as n from events group by 1"
+    r = features.incremental(settings, sql, time_column="TS", unique_key=["USER_ID"], estimate_savings=False)
+    assert r["status"] == "ok"
+    assert r["strategy"] == "merge_recompute"
+
+
+def test_incremental_valid_names_give_the_same_advice_as_before(settings):
+    sql = "select user_id, max(ts) as last_ts, count(*) as n from events group by 1"
+    checked = features.incremental(settings, sql, time_column="ts", unique_key=["user_id"], estimate_savings=False)
+    offline = features.incremental(None, sql, time_column="ts", unique_key=["user_id"], estimate_savings=False)
+    assert checked == offline
+
+
+def test_incremental_without_a_connection_cannot_check_names():
+    r = features.incremental(None, "select user_id, count(*) as n from events group by 1",
+                             time_column="nosuch", unique_key=["nosuch"])
+    assert r["status"] == "ok"
+    assert "dbt_model" in r
+
+
+def test_incremental_notes_when_the_model_cannot_be_run_to_read_its_columns(settings):
+    r = features.incremental(settings, "select user_id, count(*) as n from events_that_do_not_exist group by 1",
+                             time_column="ts", unique_key=["nosuch"], estimate_savings=False)
+    assert r["status"] == "ok"
+    assert any("--unique-key was not checked" in n for n in r["notes"])
 
 
 def test_parse_period():

@@ -1,7 +1,10 @@
 import asyncio
 import json
 
+import pytest
+
 from gulliver.cli import main
+from gulliver.demo import MAX_EVENTS, build_demo
 from gulliver.mcp_server import build_server, export_tools
 
 TOOLS = {"gulliver_status", "gulliver_inspect", "gulliver_lint", "gulliver_preflight", "gulliver_rehearse",
@@ -12,6 +15,20 @@ TOOLS = {"gulliver_status", "gulliver_inspect", "gulliver_lint", "gulliver_prefl
 
 def test_cli_status_json_after_command(demo_db, state, capsys):
     assert main(["--dsn", demo_db, "status", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "ok"
+
+
+def test_cli_status_unknown_connection_refused(demo_db, state, capsys):
+    assert main(["-c", "nosuch", "status", "--json"]) == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "error"
+    assert "Unknown connection 'nosuch'" in data["error"]
+    assert "Known connections: default" in data["error"]
+
+
+def test_cli_status_known_connection_ok(demo_db, state, capsys):
+    assert main(["-c", "default", "status", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["status"] == "ok"
 
@@ -90,6 +107,38 @@ def test_cli_receipt_list_json_has_summary_only(demo_db, state, capsys):
     assert "next_step" in data
 
 
+def test_cli_receipt_list_empty_store_messaging(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["receipt", "--list"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("No receipts yet.\n")
+    assert "next: Run gulliver preflight, rehearse or run first; each writes a receipt." in out
+
+    assert main(["receipt", "--list", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "ok"
+    assert data["receipts"] == []
+    assert data["message"] == "No receipts yet."
+    assert data["next_step"] == "Run gulliver preflight, rehearse or run first; each writes a receipt."
+
+
+def test_cli_receipt_list_unknown_status_lists_existing_statuses(demo_db, state, capsys):
+    assert main(["--dsn", demo_db, "preflight", "select count(*) from events"]) == 0
+    capsys.readouterr()
+
+    assert main(["--dsn", demo_db, "receipt", "--list", "--status", "bogus"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("No receipts with status 'bogus'.\n")
+    assert "next: Statuses in your receipts: ok." in out
+
+    assert main(["--dsn", demo_db, "receipt", "--list", "--status", "bogus", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "ok"
+    assert data["receipts"] == []
+    assert data["message"] == "No receipts with status 'bogus'."
+    assert data["next_step"] == "Statuses in your receipts: ok."
+
+
 def test_cli_translate_output_file(tmp_path, capsys):
     out = tmp_path / "model.bq.sql"
     assert main(["translate", "--from", "duckdb", "--to", "bigquery", "-o", str(out), "--json",
@@ -98,6 +147,34 @@ def test_cli_translate_output_file(tmp_path, capsys):
     assert data["warnings"]  # still printed
     assert out.read_text(encoding="utf-8") == data["sql"]
 
+
+@pytest.mark.parametrize("command", ["lint", "preflight", "rehearse", "run"])
+@pytest.mark.parametrize("sql", ["SELECT 1 FROM", "SELECT a b c FROM t", "SELECT 'abc"])
+def test_cli_syntax_errors_stay_blocked_with_actionable_advice(command, sql, demo_db, state, capsys):
+    assert main(["--dsn", demo_db, command, "--json", sql]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "block"
+    assert result["next_step"] == (
+        "Fix the syntax error and try again. If the SQL is for another engine, set --dialect."
+    )
+    reason = result["statement"]["reason"]
+    assert "line 1, column " in reason
+    assert "<Token" not in reason and "TokenType" not in reason
+
+
+@pytest.mark.parametrize("sql", ["DROP TABLE t", "SELECT 1; SELECT 2"])
+def test_cli_non_syntax_blocks_keep_existing_advice(sql, demo_db, state, capsys):
+    for command in ("lint", "preflight", "rehearse", "run"):
+        assert main(["--dsn", demo_db, command, "--json", sql]) == 2
+        result = json.loads(capsys.readouterr().out)
+        if command == "lint":
+            assert result["next_step"] == "Send a single SELECT (or CREATE/INSERT ... SELECT)."
+        elif command == "rehearse":
+            assert result["next_step"] == result["statement"]["reason"]
+        else:
+            assert result["next_step"] == (
+                "Rewrite it as one SELECT (or CREATE/INSERT ... SELECT). " + result["statement"]["reason"]
+            )
 
 
 def test_mcp_check_by_name_and_status_checks(demo_db, state, tmp_path, monkeypatch):
@@ -155,3 +232,79 @@ min_rows = 100
         err_data = json.loads(err_res.content[0].text)
     assert err_data.get("status") == "error"
     assert "Unknown configured check" in err_data.get("error", "")
+
+
+def test_cli_run_refuses_negative_max_rows_and_allows_zero(demo_db, state, capsys):
+    assert main(["--dsn", demo_db, "run", "--max-rows", "-5", "--json", "select count(*) from users"]) == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "error" and "-5" in data["error"] and data["next_step"]
+
+    assert main(["--dsn", demo_db, "run", "--max-rows", "-2", "select count(*) from users"]) == 1
+    plain = json.loads(capsys.readouterr().out)
+    assert plain["status"] == "error" and "-2" in plain["error"]
+
+    assert main(["--dsn", demo_db, "run", "--max-rows", "0", "--json", "select count(*) from users"]) == 0
+    zero = json.loads(capsys.readouterr().out)
+    assert zero["status"] == "ok" and zero["preview"] == [] and zero["actual"]["rows"] == 1
+
+
+def test_build_demo_refuses_invalid_events_and_creates_no_file(tmp_path):
+    for bad in (-5, 0):
+        target = tmp_path / f"bad_{bad}.duckdb"
+        res = build_demo(target, events=bad)
+        assert res["status"] == "error"
+        assert "--events" in res["error"] and res["next_step"]
+        assert not target.exists()
+
+    over = tmp_path / "over_limit.duckdb"
+    res = build_demo(over, events=MAX_EVENTS + 1)
+    assert res["status"] == "error"
+    assert f"{MAX_EVENTS:,}" in res["error"] and res["next_step"]
+    assert not over.exists()
+
+
+def test_cli_demo_refuses_invalid_events(tmp_path, capsys):
+    for bad in (-5, 0, MAX_EVENTS + 1):
+        target = tmp_path / f"cli_{bad}.duckdb"
+        assert main(["demo", str(target), "--events", str(bad), "--json"]) == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "error" and "--events" in data["error"] and data["next_step"]
+        assert not target.exists()
+
+    plain_target = tmp_path / "cli_plain_bad.duckdb"
+    assert main(["demo", str(plain_target), "--events", "-1"]) == 1
+    plain_data = json.loads(capsys.readouterr().out)
+    assert plain_data["status"] == "error" and "--events" in plain_data["error"]
+    assert not plain_target.exists()
+
+    ok_target = tmp_path / "ok.duckdb"
+    res = build_demo(ok_target, events=10, users=5)
+    assert res["status"] == "ok" and res["created"] is True and res["tables"] == {"events": 10, "users": 5}
+    assert ok_target.exists()
+
+
+def test_cli_rehearse_options_validation(demo_db, state, capsys):
+    # 1. Non-numeric --fractions names the option and format
+    exit_code = main(["--dsn", demo_db, "rehearse", "--fractions", "abc", "select count(*) from events"])
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "--fractions must be comma-separated numbers between 0 and 1" in out
+    assert "(got 'abc')" in out
+
+    # 2. Empty or malformed --fractions with --json
+    exit_code = main(["--dsn", demo_db, "--json", "rehearse", "--fractions", "0.01,,0.1", "select count(*) from events"])
+    assert exit_code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "error"
+    assert "--fractions must be comma-separated numbers between 0 and 1" in data["error"]
+    assert data["next_step"]
+
+    # 3. Negative --seed refused with clear message
+    exit_code = main(["--dsn", demo_db, "rehearse", "--seed", "-1", "select count(*) from events"])
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "--seed must be 0 or more" in out
+
+    # 4. Valid --fractions and --seed succeed
+    exit_code = main(["--dsn", demo_db, "rehearse", "--fractions", "0.01,0.03", "--seed", "7", "select count(*) from events"])
+    assert exit_code == 0
