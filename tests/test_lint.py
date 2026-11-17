@@ -224,6 +224,15 @@ def test_gv005_contextual_fix_advice(dialect):
         assert "ILIKE where supported" in fix_case
     assert "ts" not in fix_case
 
+    fix_trim = get_fix("select id from t where trim(name) = 'a' limit 5")
+    assert fix_trim == "Store a precomputed trimmed column (or trim the data on write), as functions on name force a full scan."
+
+    fix_ltrim = get_fix("select id from t where ltrim(name) = 'a' limit 5")
+    assert fix_ltrim == "Store a precomputed trimmed column (or trim the data on write), as functions on name force a full scan."
+
+    fix_rtrim = get_fix("select id from t where rtrim(name) = 'a' limit 5")
+    assert fix_rtrim == "Store a precomputed trimmed column (or trim the data on write), as functions on name force a full scan."
+
     # 4. COALESCE / NULL handling
     fix_null_match = get_fix("select a from t where coalesce(order_status, 'x') = 'x' limit 5")
     assert fix_null_match == "Write the NULL case out explicitly: (order_status = 'x' OR order_status IS NULL)."
@@ -232,6 +241,12 @@ def test_gv005_contextual_fix_advice(dialect):
     fix_null_diff = get_fix("select a from t where coalesce(status, 'unknown') = 'x' limit 5")
     assert fix_null_diff == "Filter directly on the column: status = 'x'."
     assert "ts" not in fix_null_diff
+
+    fix_null_col = get_fix("select id from t where coalesce(status, other_col) = 'x' limit 5")
+    assert fix_null_col == "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+    fix_null_upper = get_fix("select id from t where coalesce(upper(name), 'X') = 'X' limit 5")
+    assert fix_null_upper == "Compare the raw column where possible, or filter on a partition or indexed column first."
 
     fix_null_neq = get_fix("select a from t where coalesce(status, 'x') <> 'x' limit 5")
     assert fix_null_neq == "Compare the raw column where possible, or filter on a partition or indexed column first."
@@ -246,6 +261,18 @@ def test_gv005_contextual_fix_advice(dialect):
     assert fix_other is not None
     assert fix_other == "Compare the raw column where possible, or filter on a partition or indexed column first."
     assert "ts" not in fix_other
+
+
+def test_gv005_postgres_div_integer_division():
+    stmt_pg = classify("select id from t where amount / 2 > 10 limit 5", "postgres")
+    findings_pg = [f for f in lint(stmt_pg.select, "postgres") if f.rule == "GV005"]
+    assert len(findings_pg) == 1
+    assert findings_pg[0].fix == "Move the calculation to the constant side of the comparison."
+
+    stmt_duck = classify("select id from t where amount / 2 > 10 limit 5", "duckdb")
+    findings_duck = [f for f in lint(stmt_duck.select, "duckdb") if f.rule == "GV005"]
+    assert len(findings_duck) == 1
+    assert findings_duck[0].fix == "Move the calculation to the constant side, e.g. amount > 10 * 2 instead of amount / 2 > 10."
 
 
 def test_order_without_limit():
