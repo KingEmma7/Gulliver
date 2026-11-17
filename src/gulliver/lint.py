@@ -282,6 +282,9 @@ def _gv005_fix(
         if not isinstance(cmp, (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.NEQ)):
             return "Move the calculation to the constant side of the comparison."
 
+        if isinstance(operand, exp.Div) and dialect == "postgres":
+            return "Move the calculation to the constant side of the comparison."
+
         if isinstance(operand.this, exp.Column) and not list(operand.expression.find_all(exp.Column)):
             col_on_right = False
             arith_const_node = operand.expression
@@ -348,12 +351,23 @@ def _gv005_fix(
 
         return f"Move the calculation to the constant side, e.g. {rewrite} instead of {orig}."
 
-    # 3. Case or trim function (UPPER, LOWER, TRIM)
-    is_case_trim = isinstance(operand, (exp.Upper, exp.Lower, exp.Trim))
-    if not is_case_trim and isinstance(operand, exp.Func):
+    # 3. Trim function (TRIM, LTRIM, RTRIM)
+    is_trim = isinstance(operand, exp.Trim)
+    if not is_trim and isinstance(operand, exp.Func):
         fname = (operand.key or operand.sql_name()).lower()
-        is_case_trim = fname in ("upper", "lower", "trim", "ltrim", "rtrim")
-    if is_case_trim:
+        is_trim = fname in ("trim", "ltrim", "rtrim")
+    if is_trim:
+        return (
+            f"Store a precomputed trimmed column (or trim the data on write), as functions on "
+            f"{column_sql} force a full scan."
+        )
+
+    # 4. Case function (UPPER, LOWER)
+    is_case = isinstance(operand, (exp.Upper, exp.Lower))
+    if not is_case and isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        is_case = fname in ("upper", "lower")
+    if is_case:
         if dialect == "bigquery":
             return (
                 f"Store or compare a normalized value: a precomputed lowercase column, as functions on "
@@ -364,7 +378,7 @@ def _gv005_fix(
             f"a precomputed lowercase column, as functions on {column_sql} force a full scan."
         )
 
-    # 4. COALESCE / IFNULL / NVL
+    # 5. COALESCE / IFNULL / NVL
     is_coalesce = isinstance(operand, exp.Coalesce)
     if not is_coalesce and isinstance(operand, exp.Func):
         fname = (operand.key or operand.sql_name()).lower()
@@ -372,11 +386,11 @@ def _gv005_fix(
     if is_coalesce:
         if not isinstance(cmp, exp.EQ):
             return "Compare the raw column where possible, or filter on a partition or indexed column first."
-        if isinstance(operand, exp.Coalesce):
-            default_arg = operand.expressions[0] if operand.expressions else None
-        else:
-            args = operand.expressions if operand.expressions else [operand.this]
-            default_arg = args[1] if len(args) > 1 else (operand.expressions[0] if operand.expressions else None)
+        args = ([operand.this] if operand.this is not None else []) + list(operand.expressions or [])
+        if len(args) != 2:
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
+        if not isinstance(args[0], exp.Column) or not isinstance(args[1], exp.Literal):
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
 
         target_val = None
         if cmp is not None:
@@ -384,14 +398,18 @@ def _gv005_fix(
                 target_val = cmp.args.get("expression")
             elif cmp.args.get("expression") == operand:
                 target_val = cmp.this
-        target_sql = target_val.sql(dialect=dialect) if target_val is not None else "'x'"
-        default_sql = default_arg.sql(dialect=dialect) if default_arg is not None else None
 
-        if default_sql is not None and default_sql == target_sql:
+        if not isinstance(target_val, exp.Literal):
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+        target_sql = target_val.sql(dialect=dialect)
+        default_sql = args[1].sql(dialect=dialect)
+
+        if default_sql == target_sql:
             return f"Write the NULL case out explicitly: ({column_sql} = {target_sql} OR {column_sql} IS NULL)."
         return f"Filter directly on the column: {column_sql} = {target_sql}."
 
-    # 5. Anything else
+    # 6. Anything else
     return "Compare the raw column where possible, or filter on a partition or indexed column first."
 
 
