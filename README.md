@@ -947,6 +947,8 @@ Thanks to everyone who helps:
 
 <a href="https://github.com/laaielichter/Gulliver/graphs/contributors"><img src="https://contrib.rocks/image?repo=laaielichter/Gulliver" alt="Contributors to Gulliver"></a>
 
+If Gulliver is useful to you, a ⭐ on the repo helps other people find it.
+
 ## License
 
 MIT, see [LICENSE](https://github.com/laaielichter/Gulliver/blob/main/LICENSE).
