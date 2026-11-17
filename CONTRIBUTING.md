@@ -48,6 +48,7 @@ ruff check .
 2. Keep each pull request to one change.
 3. Add or update tests and docs (README, AGENTS.md, llms.txt, the skill) when behaviour changes.
 4. Describe what changed and why. CI must be green on Linux, Windows and macOS.
+5. Do not edit `CHANGELOG.md` in your pull request; the maintainer adds the entry, with credit to you, when it is merged. This keeps pull requests from conflicting with each other.
 
 ## Be kind
 

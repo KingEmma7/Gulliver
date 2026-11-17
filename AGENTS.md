@@ -54,6 +54,9 @@ Do not run the same query again and again. If `gulliver_run` returns `block` wit
 
 ## Pipeline work
 
+- Lint warning GV020 flags `= NULL`, `<> NULL` and `!= NULL` in either operand order. Use `IS NULL` /
+  `IS NOT NULL`, or `IS NOT DISTINCT FROM` for NULL-safe equality. There is no autofix because results change.
+
 - Lint warning GV016 flags `ORDER BY RANDOM()` / `RAND()`, even with LIMIT. For random row sampling,
   consider `TABLESAMPLE` or DuckDB's `USING SAMPLE`; check the engine's sampling semantics first.
 
@@ -72,6 +75,9 @@ Do not run the same query again and again. If `gulliver_run` returns `block` wit
   do not merge; report the flags.
 - When asked what costs the most: `gulliver_top`. Offer only the `fixed_sql` it marks as the same rows, and say
   whether the saving is `exact` or `heuristic`.
+
+Syntax failures stay blocked. Read the line/column in `statement.reason`, fix the syntax or choose the
+correct `--dialect`, then retry. Tokenizer failures explicitly mark their location as end-of-input fallback.
 
 ## Status values
 
@@ -117,3 +123,5 @@ multiplies rows). In the default mode a join that multiplies rows shows up as a 
 - The result policy (`mask`, `hash`, `deny`), the review policy and the per-agent and per-session budgets are
   set by the human. Do not split or disguise a query to get under a limit.
 - Credentials and budgets are set by the human in `gulliver.toml` or environment variables.
+- A config error saying a section "must be a table" means it needs a TOML section such as `[budget]`
+  with keys, rather than a plain value such as `budget = 3`. Fix the named section before retrying.

@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlglot import exp
 
+from .core import UsageError
 from .lint import _has_aggregation, _outer_select
 from .sqlsafety import base_tables, classify, table_ref
 
@@ -28,13 +29,35 @@ def parse_period(text: str) -> timedelta:
     if not m:
         raise ValueError("period looks like '1d', '24h', '7 days' or '30 min'")
     n, unit = int(m.group(1)), m.group(2).lower()
-    if unit.startswith("m"):
-        return timedelta(minutes=n)
-    if unit.startswith("h"):
-        return timedelta(hours=n)
-    if unit.startswith("w"):
-        return timedelta(weeks=n)
-    return timedelta(days=n)
+    multipliers = {
+        "m": {"minutes": n},
+        "h": {"hours": n},
+        "w": {"weeks": n},
+        "d": {"days": n},
+    }
+    key = unit[0]
+    try:
+        delta = timedelta(**multipliers[key])
+    except OverflowError as exc:
+        # timedelta stores its fields as C ints, so a huge input raises. The
+        # callers already turn ValueError into a clean status: "error" result.
+        raise ValueError(f"period is out of range: {text.strip()}") from exc
+    # A value that fits timedelta's C ints can still be an impossible period:
+    # 99999999999 minutes is 190,000 years. A period is a recompute window or
+    # a freshness bound, so anything past a century is a mistaken input. Cap it
+    # once, for every unit, rather than letting the C int decide which units
+    # overflow. Valid periods like 30d are far below this.
+    if delta > timedelta(days=365 * 100):
+        raise ValueError(f"period is out of range: {text.strip()}")
+    return delta
+
+
+def _parse_period_flag(period: str) -> timedelta:
+    try:
+        return parse_period(period)
+    except ValueError as exc:
+        raise UsageError(f"--period: {exc}",
+                         "Pass --period <duration>, e.g. --period 1d or --period 30 min.") from exc
 
 
 def _batch_size(period: timedelta) -> str:
@@ -117,7 +140,7 @@ def analyze(sql: str, dialect: str = "duckdb", time_column: str | None = None,
     outer = _outer_select(tree)
     if outer is None:
         return {"strategy": "not_safe", "reasons": ["UNION/INTERSECT at the top level: split it into models first"]}
-    step = parse_period(period)
+    step = _parse_period_flag(period)
     reasons: list[str] = []
     notes: list[str] = []
 

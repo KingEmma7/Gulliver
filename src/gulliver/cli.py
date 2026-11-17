@@ -339,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="append", help="col=24h (repeatable)")
     p.add_argument("--min-rows", type=int)
     p.add_argument("--max-change", type=float, help="Max %% row-count change since the last check")
+    p.add_argument("--max-null", action="append", help="col=PCT: at most this %% of rows may be NULL (repeatable)")
     p.add_argument("--samples", type=int, choices=range(21), default=0,
                    help="Up to N offending values per failed unique/accepted/range check (0-20; extra gated queries)")
 
@@ -445,6 +446,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                 raise ValueError("Give one SQL statement in quotes, or existing .sql files and folders")
             args.sql = args.sql[0] if args.sql else None
         if args.command == "lint":
+            from .lint_files import load_lint_config
+
+            # Validate [lint] for SQL strings as well as file linting.
+            load_lint_config(args.config)
             dialect = args.dialect
             if dialect is None:
                 try:
@@ -551,11 +556,12 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                         args.fresh,
                         args.min_rows is not None,
                         args.max_change is not None,
+                        args.max_null,
                     ])
                     if check_flags_passed:
                         parser.error(
                             "do not pass check flags (--where, --unique, --not-null, --accepted, "
-                            "--range, --fresh, --min-rows, --max-change) when using --all."
+                            "--range, --fresh, --max-null, --min-rows, --max-change) when using --all."
                         )
                     result = features.check_all(settings, connection=conn, samples=args.samples)
                 else:
@@ -564,7 +570,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                     result = features.check(settings, args.target, connection=conn, where=args.where,
                                             unique=args.unique, not_null=args.not_null, accepted=args.accepted,
                                             ranges=args.ranges, fresh=args.fresh, min_rows=args.min_rows,
-                                            max_change_pct=args.max_change, samples=args.samples)
+                                            max_change_pct=args.max_change, samples=args.samples,
+                                            max_null=args.max_null)
             return _emit(result, args.json)
         if args.command == "calibration":
             from .calibration import calibration, render_calibration
@@ -584,7 +591,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                     from .incremental import parse_period
                     older_than_td = parse_period(args.older_than)
                 except ValueError as exc:
-                    parser.error(f"--older-than: {exc}")
+                    return _emit(
+                        {"status": "error", "error": f"--older-than: {exc}", "next_step": "Check the arguments."},
+                        args.json,
+                    )
                 result = runaway.prune(settings, older_than=older_than_td,
                                        keep_last=args.keep_last, dry_run=args.dry_run)
                 if args.json or result.get("status") != "ok":
@@ -602,7 +612,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                 print(text, end="")
             return 0
         if args.command == "status":
-            result = core.status(settings)
+            result = core.status(settings, args.connection)
         elif args.command == "inspect" and (args.sensitive or args.scan):
             from .guard import inspect_sensitive
 
@@ -613,7 +623,20 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         elif args.command == "preflight":
             result = core.preflight(settings, _read_sql(args), connection=conn)
         elif args.command == "rehearse":
-            fractions = [float(x) for x in args.fractions.split(",")] if args.fractions else None
+            fractions = None
+            if args.fractions is not None:
+                try:
+                    fractions = [float(x.strip()) for x in args.fractions.split(",")]
+                except ValueError:
+                    err_msg = (
+                        f"--fractions must be comma-separated numbers between 0 and 1, "
+                        f"e.g. 0.01,0.03,0.1 (got {args.fractions!r})"
+                    )
+                    next_msg = (
+                        "Use --fractions with comma-separated numbers between 0 and 1, "
+                        "for example --fractions 0.01,0.03,0.1."
+                    )
+                    return _emit({"status": "error", "error": err_msg, "next_step": next_msg}, args.json)
             result = core.rehearse(settings, _read_sql(args), connection=conn, fractions=fractions,
                                    sample=args.sample, method=args.method, seed=args.seed)
         elif args.command == "run":
@@ -625,9 +648,12 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                     parser.error("receipt --list does not take a receipt ID")
                 result = core.list_receipts(settings, limit=args.limit, status=args.status)
                 if result.get("status") == "ok" and not args.json:
-                    for rec in result["receipts"]:
-                        print(f"{rec['receipt_id']}  {rec['created_at']}  {rec['action']}  "
-                              f"{rec['status']}  {rec['connection']}  {rec['sql_preview']}")
+                    if not result["receipts"]:
+                        print(result.get("message", "No receipts yet."))
+                    else:
+                        for rec in result["receipts"]:
+                            print(f"{rec['receipt_id']}  {rec['created_at']}  {rec['action']}  "
+                                  f"{rec['status']}  {rec['connection']}  {rec['sql_preview']}")
                     print(f"\nnext: {result['next_step']}")
                     return EXIT.get(str(result.get("status")), 1)
             else:

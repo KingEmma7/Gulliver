@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from .core import UsageError
 from .engines.base import Engine
 from .incremental import parse_period
 
@@ -22,12 +23,13 @@ class CheckSpec:
     accepted: dict[str, list[str]] = field(default_factory=dict)
     ranges: dict[str, tuple[float | None, float | None]] = field(default_factory=dict)
     fresh: dict[str, str] = field(default_factory=dict)         # column -> max age, e.g. "24h"
+    max_null: dict[str, float] = field(default_factory=dict)    # column -> max NULL share, in percent
     min_rows: int | None = None
     max_change_pct: float | None = None
 
     def is_empty(self) -> bool:
         return not (self.unique or self.not_null or self.accepted or self.ranges or self.fresh
-                    or self.min_rows is not None or self.max_change_pct is not None)
+                    or self.max_null or self.min_rows is not None or self.max_change_pct is not None)
 
 @dataclass(frozen=True)
 class CheckConfig:
@@ -41,7 +43,7 @@ class CheckConfig:
 
 KNOWN_CHECK_KEYS = frozenset({
     "target", "connection", "where", "unique", "not_null", "accepted",
-    "range", "ranges", "fresh", "min_rows", "max_change_pct", "samples",
+    "range", "ranges", "fresh", "max_null", "min_rows", "max_change_pct", "samples",
 })
 
 
@@ -243,19 +245,45 @@ def parse_check_config(name: str, data: dict[str, Any]) -> CheckConfig:
         else:
             raise ConfigError(f"[checks.{name}] fresh must be a table or list, got {type(raw_fresh).__name__}")
 
+    raw_max_null = data.get("max_null")
+    max_null_dict: dict[str, float] = {}
+    if raw_max_null is not None:
+        if isinstance(raw_max_null, dict):
+            for col, pct in raw_max_null.items():
+                column = str(col).strip()
+                if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+                    raise ConfigError(f"[checks.{name}] max_null for {column!r} must be a number, got {pct!r}")
+                if not math.isfinite(float(pct)) or not 0 <= float(pct) <= 100:
+                    raise ConfigError(f"[checks.{name}] max_null for {column!r} must be between 0 and 100, got {pct!r}")
+                max_null_dict[column] = float(pct)
+        elif isinstance(raw_max_null, list):
+            for item in raw_max_null:
+                if not isinstance(item, str) or "=" not in item:
+                    raise ConfigError(f"[checks.{name}] max_null list entry must be 'col=PCT', got {item!r}")
+                col, _, pct = item.partition("=")
+                column = col.strip()
+                try:
+                    value = _null_pct(column, pct)
+                except ValueError as exc:
+                    raise ConfigError(f"[checks.{name}] {exc}") from exc
+                max_null_dict[column] = value
+        else:
+            raise ConfigError(f"[checks.{name}] max_null must be a table or list, got {type(raw_max_null).__name__}")
+
     spec = CheckSpec(
         unique=unique_keys,
         not_null=not_null_cols,
         accepted=accepted_dict,
         ranges=ranges_dict,
         fresh=fresh_dict,
+        max_null=max_null_dict,
         min_rows=min_rows,
         max_change_pct=max_change_pct,
     )
     if spec.is_empty():
         raise ConfigError(
             f"[checks.{name}] has no checks configured; give at least one check "
-            "(unique, not_null, accepted, range, fresh, min_rows, max_change_pct)"
+            "(unique, not_null, accepted, range, fresh, max_null, min_rows, max_change_pct)"
         )
     return CheckConfig(
         name=name,
@@ -283,6 +311,8 @@ def merge_specs(base: CheckSpec, override: CheckSpec) -> CheckSpec:
     ranges.update(override.ranges)
     fresh = dict(base.fresh)
     fresh.update(override.fresh)
+    max_null = dict(base.max_null)
+    max_null.update(override.max_null)
     min_rows = override.min_rows if override.min_rows is not None else base.min_rows
     max_change_pct = override.max_change_pct if override.max_change_pct is not None else base.max_change_pct
     return CheckSpec(
@@ -291,16 +321,34 @@ def merge_specs(base: CheckSpec, override: CheckSpec) -> CheckSpec:
         accepted=accepted,
         ranges=ranges,
         fresh=fresh,
+        max_null=max_null,
         min_rows=min_rows,
         max_change_pct=max_change_pct,
     )
 
 
 
+MAX_NULL_EXAMPLE = "Pass --max-null col=PCT, e.g. --max-null amount=5."
+
+
+def _null_pct(column: str, text: str) -> float:
+    """A --max-null share: a finite number from 0 to 100."""
+    try:
+        value = float(text.strip())
+    except (ValueError, TypeError) as exc:
+        raise UsageError(f"--max-null for {column!r} needs a percentage, got {text!r}", MAX_NULL_EXAMPLE) from exc
+    if not math.isfinite(value):
+        raise UsageError(f"--max-null for {column!r} needs a finite percentage, got {text!r}", MAX_NULL_EXAMPLE)
+    if not 0 <= value <= 100:
+        raise UsageError(f"--max-null for {column!r} must be between 0 and 100, got {text.strip()}", MAX_NULL_EXAMPLE)
+    return value
+
+
 def parse_spec(unique: list[str] | None = None, not_null: list[str] | None = None,
                accepted: list[str] | None = None, ranges: list[str] | None = None,
                fresh: list[str] | None = None, min_rows: int | None = None,
-               max_change_pct: float | None = None) -> CheckSpec:
+               max_change_pct: float | None = None,
+               max_null: list[str] | None = None) -> CheckSpec:
     """Parse CLI-style strings: unique 'id' or 'a,b'; accepted 'status=new|paid'; range 'amount=0:1000';
     fresh 'ts=24h'."""
     spec = CheckSpec(min_rows=min_rows, max_change_pct=max_change_pct)
@@ -311,12 +359,14 @@ def parse_spec(unique: list[str] | None = None, not_null: list[str] | None = Non
     for a in accepted or []:
         col, _, values = a.partition("=")
         if not values:
-            raise ValueError(f"accepted needs col=a|b|c, got '{a}'")
+            raise UsageError(f"--accepted needs col=a|b|c, got '{a}'",
+                             "Pass --accepted col=a|b|c, e.g. --accepted status=new|paid.")
         spec.accepted[col.strip()] = [v for v in values.split("|")]
     for r in ranges or []:
         col, sep, bounds = r.partition("=")
         if not sep or ":" not in bounds:
-            raise ValueError(f"range needs col=min:max (either side may be empty), got '{r}'")
+            raise UsageError(f"--range needs col=min:max (either side may be empty), got '{r}'",
+                             "Pass --range col=min:max, e.g. --range amount=0:1000.")
         column = col.strip()
         lo_text, _, hi_text = bounds.partition(":")
         lo = _range_bound(column, lo_text) if lo_text.strip() else None
@@ -324,9 +374,20 @@ def parse_spec(unique: list[str] | None = None, not_null: list[str] | None = Non
         if lo is not None and hi is not None and lo > hi:
             raise ValueError(f"range for {column!r} has min {lo_text.strip()} > max {hi_text.strip()}")
         spec.ranges[column] = (lo, hi)
+    for m in max_null or []:
+        col, sep, pct = m.partition("=")
+        if not sep or not col.strip():
+            raise UsageError(f"--max-null needs col=PCT, got '{m}'", MAX_NULL_EXAMPLE)
+        spec.max_null[col.strip()] = _null_pct(col.strip(), pct)
     for f in fresh or []:
-        col, _, age = f.partition("=")
-        parse_period(age)  # validate early
+        col, sep, age = f.partition("=")
+        example = "Pass --fresh col=age, e.g. --fresh ts=24h."
+        if not sep or not age.strip():
+            raise UsageError(f"--fresh needs col=age, got '{f}'", example)
+        try:
+            parse_period(age)  # validate early
+        except ValueError as exc:
+            raise UsageError(f"--fresh: {exc}", example) from exc
         spec.fresh[col.strip()] = age.strip()
     return spec
 
@@ -369,6 +430,8 @@ def build_sql(engine: Engine, source: str, spec: CheckSpec, where: str | None = 
             add(f"COUNT(*) - COUNT(DISTINCT {text})", "unique", ",".join(key))
     for col in spec.not_null:
         add(f"SUM(CASE WHEN {q(col)} IS NULL THEN 1 ELSE 0 END)", "not_null", col)
+    for col, pct in spec.max_null.items():
+        add(f"SUM(CASE WHEN {q(col)} IS NULL THEN 1 ELSE 0 END)", "null_rate", col, {"max_null_pct": pct})
     for col, values in spec.accepted.items():
         in_list = ", ".join(_lit(v) for v in values)
         add(f"SUM(CASE WHEN {q(col)} IS NOT NULL AND CAST({q(col)} AS {engine.text_type}) NOT IN ({in_list}) "
@@ -483,6 +546,18 @@ def evaluate(row: dict[str, Any], plan: list[dict], spec: CheckSpec, previous_ro
             for key in ("values", "min", "max"):
                 if key in item:
                     out[key] = item[key]
+        elif check == "null_rate":
+            nulls = int(value or 0)
+            out["failing_rows"] = nulls
+            out["max_null_pct"] = item["max_null_pct"]
+            # An empty table has no rate: it is not "0% null", it is unknown, and
+            # a check that cannot be evaluated must not read as a pass.
+            out["null_pct"] = round(nulls * 100 / total, 2) if total else None
+            if total == 0:
+                out["passed"] = False
+                out["message"] = "The table or query returned no rows."
+            else:
+                out["passed"] = nulls * 100 <= item["max_null_pct"] * total
         elif check == "freshness":
             latest = _as_utc(value)
             limit = parse_period(item["max_age"])
