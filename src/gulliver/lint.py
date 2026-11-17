@@ -245,6 +245,32 @@ def _count_for_existence(node: exp.Expression) -> str | None:
     return None
 
 
+def _integer_value(node: exp.Expression | None) -> int | None:
+    """The value of an integer literal, with a leading minus sign if there is one."""
+    sign = 1
+    if isinstance(node, exp.Neg):
+        sign, node = -1, node.this
+    if isinstance(node, exp.Literal) and node.is_int:
+        try:
+            return sign * int(str(node.this))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _loses_a_fraction(const: exp.Expression | None, divisor: exp.Expression) -> bool:
+    """True when ``const / divisor`` drops a fraction under Postgres integer division.
+
+    Moving ``amount * 2 >= 11`` to ``amount >= 11 / 2`` is wrong on Postgres: ``11 / 2`` is 5, so the
+    rewrite also keeps rows with ``amount = 5``, whose ``5 * 2`` is 10. Only an exact division, such as
+    ``10 / 2``, gives the same rows. A decimal on either side is fine: Postgres divides it as numeric.
+    """
+    const_value, divisor_value = _integer_value(const), _integer_value(divisor)
+    if const_value is None or divisor_value is None or divisor_value == 0:
+        return False
+    return const_value % divisor_value != 0
+
+
 def _gv005_fix(
     operand: exp.Expression,
     column_sql: str,
@@ -339,6 +365,13 @@ def _gv005_fix(
                 cmp_const_node = cmp.this
                 is_col_left = False
         cmp_const_sql = cmp_const_node.sql(dialect=dialect) if cmp_const_node is not None else "100"
+
+        # A multiplication is moved to the other side as a division, and Postgres divides integers with
+        # truncation, so `amount * 2 >= 11` must not become `amount >= 11 / 2` (that is 5, which also
+        # matches amount = 5). An exact division keeps the same rows, so it is still worth suggesting.
+        if isinstance(operand, exp.Mul) and dialect == "postgres" \
+                and _loses_a_fraction(cmp_const_node, arith_const_node):
+            return "Move the calculation to the constant side of the comparison."
 
         if is_col_left:
             orig = f"{operand.sql(dialect=dialect)} {cmp_op_str} {cmp_const_sql}"

@@ -275,6 +275,34 @@ def test_gv005_postgres_div_integer_division():
     assert findings_duck[0].fix == "Move the calculation to the constant side, e.g. amount > 10 * 2 instead of amount / 2 > 10."
 
 
+def test_gv005_postgres_mul_is_not_rewritten_as_a_truncating_division():
+    """`amount * 2 >= 11` must not become `amount >= 11 / 2`: Postgres truncates that to 5."""
+
+    def fix(sql, dialect):
+        stmt = classify(sql, dialect)
+        findings = [f for f in lint(stmt.select, dialect) if f.rule == "GV005"]
+        assert len(findings) == 1, (sql, dialect)
+        return findings[0].fix
+
+    generic = "Move the calculation to the constant side of the comparison."
+    assert fix("select id from t where amount * 2 >= 11 limit 5", "postgres") == generic
+    # Same comparison written the other way round, and with a negative constant.
+    assert fix("select id from t where 11 <= amount * 2 limit 5", "postgres") == generic
+    assert fix("select id from t where amount * 2 >= -11 limit 5", "postgres") == generic
+    # An exact division changes nothing on Postgres, so the concrete rewrite is still offered.
+    assert fix("select id from t where amount * 2 >= 10 limit 5", "postgres") == (
+        "Move the calculation to the constant side, e.g. amount >= 10 / 2 instead of amount * 2 >= 10.")
+    # A decimal on either side is divided as numeric by Postgres, so it keeps the concrete rewrite.
+    assert fix("select id from t where amount * 1.2 > 100 limit 5", "postgres") == (
+        "Move the calculation to the constant side, e.g. amount > 100 / 1.2 instead of amount * 1.2 > 100.")
+    assert fix("select id from t where amount * 2.0 >= 11 limit 5", "postgres") == (
+        "Move the calculation to the constant side, e.g. amount >= 11 / 2.0 instead of amount * 2.0 >= 11.")
+    # DuckDB, BigQuery and Snowflake divide with decimals, so nothing changes for them.
+    for dialect in ("duckdb", "bigquery", "snowflake"):
+        assert fix("select id from t where amount * 2 >= 11 limit 5", dialect) == (
+            "Move the calculation to the constant side, e.g. amount >= 11 / 2 instead of amount * 2 >= 11.")
+
+
 def test_order_without_limit():
     assert rules("select id from events order by id")["GV006"] == "warn"
 
