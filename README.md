@@ -548,6 +548,10 @@ All checks become one aggregate query (one scan), budget-gated like any other. S
 when a check fails, so it drops into CI or an orchestrator. Row-count history is kept per target, so
 `--max-change` catches a load that suddenly lost half its rows. When a table has no requested checks, its row count is still recorded for that history, but `checks_requested: 0` and `next_step` explicitly say no data-quality checks were requested; add at least one check option to validate the data.
 
+`--max-null COL=PCT` is for a column that is partly empty on purpose: it passes while at most PCT percent
+(0-100) of the rows are NULL, and fails above that. `--max-null col=0` is the same as `--not-null col`, and
+an empty table has no rate, so it reports `null_pct: null` and fails instead of reading as 0% null.
+
 Add `--samples N` (1-20; MCP `samples`) to see the most frequent offending values and their row counts for
 failed unique, accepted-values and range checks. A composite key shows every key column; single-column
 uniqueness ignores NULLs, while composite keys include them. This is off by default: each failed supported
@@ -829,7 +833,7 @@ gulliver snapshot | drift [--models DIR] [--save]
 gulliver diff --left SQL --right SQL --key k1,k2 [--right-connection NAME] [--columns a,b]
 gulliver translate SQL --to D [--from D] [--check] [-o PATH]
 gulliver incremental SQL [--time-column C] [--unique-key K] [--period 1d] [--lookback 1]
-gulliver check TARGET [--where W] [--unique K] [--not-null C] [--accepted C=a|b] [--range C=min:max] [--fresh C=24h] [--min-rows N] [--max-change PCT] [--samples 0-20]
+gulliver check TARGET [--where W] [--unique K] [--not-null C] [--max-null C=PCT] [--accepted C=a|b] [--range C=min:max] [--fresh C=24h] [--min-rows N] [--max-change PCT] [--samples 0-20]
 gulliver top [--source auto|receipts|pg_stat_statements|bigquery_jobs|snowflake_history|csv:FILE|jsonl:FILE]
              [--file PATH] [--days 7] [--limit 20] [--analyze 10] [--rank-by auto|cost|runtime|bytes|calls] [-o PATH]
 gulliver review [--models DIR] [--base REF] [--head REF] | [--manifest-base FILE --manifest-head FILE]
