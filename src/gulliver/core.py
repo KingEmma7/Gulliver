@@ -802,14 +802,16 @@ def list_receipts(settings: Settings, limit: int = 20, status: str | None = None
             "sql_preview": sql[:120],
         })
 
-    if not all_receipts:
+    active_filters = [f"--{name} {value!r}" for name, value in
+                      (("status", status), ("action", action), ("connection", connection)) if value is not None]
+    if not all_receipts and not active_filters:
         next_step = "Run gulliver preflight, rehearse or run first; each writes a receipt."
         message = "No receipts yet."
     elif not summaries:
         existing_statuses = sorted({str(rec.get("status")) for rec in all_receipts if rec.get("status")})
         status_list = ", ".join(existing_statuses) if existing_statuses else "none"
         next_step = f"Statuses in your receipts: {status_list}."
-        message = f"No receipts with status '{status}'."
+        message = f"No receipts match {', '.join(active_filters)}."
     else:
         next_step = "Use a receipt_id with `gulliver receipt` to inspect the full receipt."
         message = None

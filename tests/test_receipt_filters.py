@@ -56,3 +56,45 @@ def test_receipt_limit_is_applied_after_all_filters(receipts, capsys):
     assert "new-run" in output
     assert "old-run" not in output
     assert "preflight" not in output
+
+
+@pytest.mark.parametrize("filters, message", [
+    ({"status": "missing"}, "No receipts match --status 'missing'."),
+    ({"action": "missing"}, "No receipts match --action 'missing'."),
+    ({"connection": "missing"}, "No receipts match --connection 'missing'."),
+    ({"action": "missing", "connection": "warehouse"},
+     "No receipts match --action 'missing', --connection 'warehouse'."),
+    ({"status": "block", "action": "preflight", "connection": "local"},
+     "No receipts match --status 'block', --action 'preflight', --connection 'local'."),
+    ({"action": ""}, "No receipts match --action ''."),
+])
+def test_empty_filtered_receipts_name_only_active_filters(receipts, capsys, filters, message):
+    result = core.list_receipts(receipts, **filters)
+    assert result["receipts"] == []
+    assert result["message"] == message
+    args = ["receipt", "--list"]
+    for key, value in filters.items():
+        args.extend([f"--{key}", value])
+    assert main(args) == 0
+    assert capsys.readouterr().out.splitlines()[0] == message
+    assert main([*args, "--json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "ok"
+    assert output["receipts"] == []
+    assert output["message"] == message
+
+
+def test_empty_store_with_active_filter_names_it(settings):
+    result = core.list_receipts(settings, action="missing")
+    assert result["receipts"] == []
+    assert result["message"] == "No receipts match --action 'missing'."
+
+
+def test_matching_filter_keeps_receipt_output(receipts, capsys):
+    result = core.list_receipts(receipts, connection="local")
+    assert "message" not in result
+    assert [rec["receipt_id"].split("-", 3)[3] for rec in result["receipts"]] == ["other-connection"]
+    assert main(["receipt", "--list", "--connection", "local"]) == 0
+    output = capsys.readouterr().out
+    assert "other-connection" in output
+    assert "No receipts" not in output
