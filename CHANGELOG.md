@@ -26,6 +26,7 @@
 - Lint GV005 no longer suggests a rewrite that changes results in three cases: a `COALESCE` whose first argument is not a plain column or whose default or compared value is not a literal, `/` on Postgres (integer division), and `TRIM`/`LTRIM`/`RTRIM`, which now get trimmed-column advice instead of case-folding advice. Thanks to @dianatofficial! (#191, #193)
 - Lint GV005 no longer suggests a truncating division on Postgres: for `amount * 2 >= 11` the advice is the generic sentence instead of `amount >= 11 / 2`, which returns different rows, while exact and decimal divisions keep their concrete rewrite. Thanks to @tyza66! (#195, #196)
 - `gulliver-mcp --port` and `gulliver mcp --port` refuse a value outside 0-65535 with a one-line `gulliver-mcp: port must be 0-65535` message and exit 2, instead of an `OverflowError` traceback. `--port 0` stays valid. Thanks to @HarshRajSinghania! (#113, #114)
+- `incremental --lookback` and `prune --keep-last` refuse a negative number with `status: error` and a `next_step`, before any SQL advice is built or any receipt is pruned (a rejected `prune` leaves the receipt and audit files untouched). `0` stays valid. Thanks to @yinbowen-dc! (#98, #100)
 
 ### Added
 - Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
