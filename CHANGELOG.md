@@ -33,6 +33,7 @@
 - `check --max-null COL=PCT` (MCP `max_null`, and `max_null` in a `[checks.<name>]` table of `gulliver.toml`) adds a `null_rate` check to the same scan as the other checks: it passes while at most PCT percent of the rows are NULL and reports `null_pct`, `max_null_pct` and `failing_rows`. `--max-null col=0` behaves like `--not-null col`, an empty table has no rate (`null_pct: null`, not passed), and a PCT that is not a finite number from 0 to 100 is refused before a query runs. Thanks to @tyza66! (#132, #183)
 - A step-by-step tutorial on the demo database, [docs/tutorial.md](docs/tutorial.md), linked from the README quick start: inspect, preflight, lint, fix, rehearse, run and receipt, with the output to expect and no warehouse needed. Thanks to @HarshRajSinghania! (#134, #136)
 - `gulliver demo --help` describes `--overwrite` and `--events`, `gulliver mcp --help` and `gulliver-mcp --help` describe `--http`, `--host` and `--port`, and the README CLI reference lists `demo --events/--overwrite`, `incremental --no-savings` and `mcp --host/--port`. Defaults and behaviour are unchanged. Thanks to @HarshRajSinghania! (#124, #149)
+- `gulliver receipt --list` takes `--action` (for example `run` or `rehearse`) and uses the global `--connection` to list only the receipts of that action or connection. They combine with `--status`, the limit is applied after all filters, and the output stays summary-only. Thanks to @yinbowen-dc! (#93, #101)
 
 ## 0.4.0 - 2026-11-11
 
