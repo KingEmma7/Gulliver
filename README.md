@@ -849,6 +849,10 @@ gulliver tools --format mcp|openai|gemini [--toolset core|pipeline|all|NAMES]
 gulliver mcp [--http] [--host HOST] [--port N] [--toolset core|pipeline|all|NAMES]   start the MCP server
 ```
 
+Receipt-list filters combine. If nothing matches, the message names only the supplied filters, for example
+`No receipts match --action 'run', --connection 'warehouse'.` An empty unfiltered list still says
+`No receipts yet.` JSON output keeps `receipts: []` for either empty case.
+
 Exit codes: `0` ok, `1` error, `2` blocked (also: a lint finding at `--fail-on`, a rewrite found by
 `fix --check`, a review that says do not merge), `3` needs rehearsal or approval, `4` a check failed (data
 checks, `selftest`, `audit verify`).

@@ -145,14 +145,14 @@ def test_cli_receipt_list_unknown_status_lists_existing_statuses(demo_db, state,
 
     assert main(["--dsn", demo_db, "receipt", "--list", "--status", "bogus"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("No receipts with status 'bogus'.\n")
+    assert out.startswith("No receipts match --status 'bogus'.\n")
     assert "next: Statuses in your receipts: ok." in out
 
     assert main(["--dsn", demo_db, "receipt", "--list", "--status", "bogus", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["status"] == "ok"
     assert data["receipts"] == []
-    assert data["message"] == "No receipts with status 'bogus'."
+    assert data["message"] == "No receipts match --status 'bogus'."
     assert data["next_step"] == "Statuses in your receipts: ok."
 
 
