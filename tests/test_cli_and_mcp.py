@@ -165,6 +165,24 @@ def test_cli_translate_output_file(tmp_path, capsys):
     assert out.read_text(encoding="utf-8") == data["sql"]
 
 
+
+@pytest.mark.parametrize("extra, message", [
+    (["--min-rows", "-5"], "min_rows"),
+    (["--max-change", "-5"], "max_change"),
+    (["--max-change", "nan"], "max_change"),
+    (["--max-change", "inf"], "max_change"),
+])
+def test_check_refuses_invalid_thresholds(demo_db, capsys, extra, message):
+    code = main(["--dsn", demo_db, "--json", "check", "events", "--not-null", "event_id", *extra])
+    assert code == 1
+    assert message in capsys.readouterr().out
+
+
+def test_check_accepts_zero_min_rows(demo_db):
+    assert main(["--dsn", demo_db, "--json", "check", "events", "--not-null", "event_id", "--min-rows", "0"]) == 0
+
+
+
 @pytest.mark.parametrize("command", ["lint", "preflight", "rehearse", "run"])
 @pytest.mark.parametrize("sql", ["SELECT 1 FROM", "SELECT a b c FROM t", "SELECT 'abc"])
 def test_cli_syntax_errors_stay_blocked_with_actionable_advice(command, sql, demo_db, state, capsys):
@@ -192,6 +210,7 @@ def test_cli_non_syntax_blocks_keep_existing_advice(sql, demo_db, state, capsys)
             assert result["next_step"] == (
                 "Rewrite it as one SELECT (or CREATE/INSERT ... SELECT). " + result["statement"]["reason"]
             )
+
 
 
 def test_mcp_check_by_name_and_status_checks(demo_db, state, tmp_path, monkeypatch):
