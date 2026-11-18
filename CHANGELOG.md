@@ -31,6 +31,7 @@
 - Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
 - Lint rule GV019 `having-on-group-column` (info, no autofix): flags a `HAVING` condition that uses only GROUP BY columns, since it filters after the aggregation and could move to `WHERE`. Aggregates, `GROUP BY`-less queries, `ROLLUP`/`CUBE`/`GROUPING SETS`, subqueries and `random()` are not flagged. Thanks to @Ipsita-Mondal-30! (#125, #186)
 - `check --max-null COL=PCT` (MCP `max_null`, and `max_null` in a `[checks.<name>]` table of `gulliver.toml`) adds a `null_rate` check to the same scan as the other checks: it passes while at most PCT percent of the rows are NULL and reports `null_pct`, `max_null_pct` and `failing_rows`. `--max-null col=0` behaves like `--not-null col`, an empty table has no rate (`null_pct: null`, not passed), and a PCT that is not a finite number from 0 to 100 is refused before a query runs. Thanks to @tyza66! (#132, #183)
+- A step-by-step tutorial on the demo database, [docs/tutorial.md](docs/tutorial.md), linked from the README quick start: inspect, preflight, lint, fix, rehearse, run and receipt, with the output to expect and no warehouse needed. Thanks to @HarshRajSinghania! (#134, #136)
 
 ## 0.4.0 - 2026-11-11
 
