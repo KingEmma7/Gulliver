@@ -273,6 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--list", action="store_true", help="List recent receipts instead of showing one")
     p.add_argument("--limit", type=int, default=20, help="Maximum receipts to list (default: 20)")
     p.add_argument("--status", help="Only list receipts with this status, e.g. needs_approval")
+    p.add_argument("--action", help="Only list receipts with this action, e.g. run or rehearse")
     p.add_argument("--format", choices=["markdown", "json"], default="markdown")
     p.add_argument("-o", "--output", metavar="PATH", help="Also write the receipt (in --format) to PATH")
 
@@ -282,8 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("demo", help="Create a demo DuckDB database (5M events) to try Gulliver")
     p.add_argument("path", nargs="?", default="gulliver_demo.duckdb")
-    p.add_argument("--overwrite", action="store_true")
-    p.add_argument("--events", type=int, default=5_000_000)
+    p.add_argument("--overwrite", action="store_true", help="Replace PATH if it already exists")
+    p.add_argument("--events", type=int, default=5_000_000, help="Number of generated events (default: 5000000)")
 
     def models_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--models", help="Folder with SQL models (*.sql, dbt-style refs allowed)")
@@ -386,9 +387,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--toolset", default="all", help="all, core, pipeline, or a comma list of those and tool names")
 
     p = sub.add_parser("mcp", help="Start the MCP server (same as gulliver-mcp)")
-    p.add_argument("--http", action="store_true")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--http", action="store_true", help="Serve over HTTP instead of stdio")
+    p.add_argument("--host", default="127.0.0.1", help="HTTP host to bind when using --http (default: 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8765, help="HTTP port to bind when using --http (default: 8765)")
     p.add_argument("--toolset", default="all", help="all, core, pipeline, or a comma list of those and tool names")
     return parser
 
@@ -646,7 +647,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             if args.list:
                 if args.receipt_id != "latest":
                     parser.error("receipt --list does not take a receipt ID")
-                result = core.list_receipts(settings, limit=args.limit, status=args.status)
+                result = core.list_receipts(settings, limit=args.limit, status=args.status,
+                                            action=args.action, connection=args.connection)
                 if result.get("status") == "ok" and not args.json:
                     if not result["receipts"]:
                         print(result.get("message", "No receipts yet."))

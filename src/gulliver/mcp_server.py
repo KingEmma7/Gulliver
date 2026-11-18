@@ -546,13 +546,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", help="Path to gulliver.toml")
     parser.add_argument("--dsn", help="Connection string, e.g. path/to/file.duckdb or bigquery://project")
     parser.add_argument("--http", action="store_true", help="Serve Streamable HTTP instead of stdio")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP host to bind when using --http (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8765, help="HTTP port to bind when using --http (default: 8765)")
     parser.add_argument("--toolset", default="all",
                         help="Tools to expose: all (default), core (the 8 query tools), pipeline, or a comma list "
                              "of those and tool names. Fewer tools = a smaller schema in the agent's context.")
     parser.add_argument("--version", action="version", version=f"gulliver-mcp {__version__}")
     args = parser.parse_args(argv)
+    if not 0 <= args.port <= 65535:
+        print("gulliver-mcp: port must be 0-65535", file=sys.stderr)
+        raise SystemExit(2)
+
     _ARGS.update(config=args.config, dsn=args.dsn)
     try:
         load_settings(config_path=args.config, dsn=args.dsn)
