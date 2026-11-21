@@ -106,6 +106,7 @@ FILE_FUNCTIONS = _words("""read_csv read_csv_auto read_tsv read_parquet parquet_
     read_json_objects_auto read_ndjson read_ndjson_auto read_ndjson_objects sniff_csv glob delta_scan iceberg_scan
     iceberg_metadata iceberg_snapshots read_xlsx st_read st_read_meta read_avro sqlite_scan
     read_duckdb read_single_csv_file read_single_json_file read_single_parquet_file parquet_full_metadata
+    parquet_page_index
     read_text read_blob""")  # the last two are refused by name, and path-checked when a human allows them
 
 REMOTE_PREFIXES = ("http://", "https://", "s3://", "s3a://", "s3n://", "gs://", "gcs://", "r2://", "az://",
