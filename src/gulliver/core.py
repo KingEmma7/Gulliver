@@ -19,7 +19,7 @@ from .extrapolate import BANDS, Fit, fit_power_law, overall_confidence
 from .lint import Finding, _has_aggregation, _outer_select, lint, summarize
 from .sampling import sample_query, sampling_tree
 from .security import policy_for
-from .sqlsafety import Statement, base_tables, classify, table_ref
+from .sqlsafety import SYNTAX_ERROR_NEXT_STEP, Statement, base_tables, classify, table_ref
 from .store import Store
 
 DEFAULT_FRACTIONS = (0.01, 0.03, 0.1)
@@ -46,6 +46,14 @@ def _engine(settings: Settings, connection: str | None, read_only: bool = True) 
 
 def _error(message: str, next_step: str = "Fix the problem above and try again.", **extra: Any) -> dict[str, Any]:
     return {"status": "error", "error": message, "next_step": next_step, **extra}
+
+
+class UsageError(ValueError):
+    """A malformed flag value: the message names the option, ``next_step`` carries a working example."""
+
+    def __init__(self, message: str, next_step: str):
+        super().__init__(message)
+        self.next_step = next_step
 
 
 def _fmt_usd(value: float | None) -> str:
@@ -146,7 +154,8 @@ def lint_sql(sql: str, dialect: str = "duckdb") -> dict[str, Any]:
     statement = classify(sql, dialect)
     if statement.kind == "block" or statement.select is None:
         return {"status": "block", "statement": statement.public(), "lint": [],
-                "next_step": "Send a single SELECT (or CREATE/INSERT ... SELECT)."}
+                "next_step": SYNTAX_ERROR_NEXT_STEP if statement.parse_error else
+                "Send a single SELECT (or CREATE/INSERT ... SELECT)."}
     findings = lint(statement.select, dialect)
     counts = summarize(findings)
     state = "block" if counts["error"] else ("warn" if counts["warn"] else "ok")
@@ -231,7 +240,7 @@ def _preflight_core(settings: Settings, sql: str, connection: str | None) -> dic
     }
     if statement.kind == "block":
         base.update(status="block", gate={"status": "block", "blocks": [statement.reason]},
-                    next_step=statement.reason if statement.code else
+                    next_step=SYNTAX_ERROR_NEXT_STEP if statement.parse_error else statement.reason if statement.code else
                     "Rewrite it as one SELECT (or CREATE/INSERT ... SELECT). " + statement.reason)
         return base
 
@@ -354,7 +363,7 @@ def _rehearse(settings: Settings, sql: str, connection: str | None, fractions: l
         "sql_hash": statement.sql_hash, "statement": statement.public(),
     }
     if statement.kind == "block":
-        result.update(status="block", next_step=statement.reason)
+        result.update(status="block", next_step=SYNTAX_ERROR_NEXT_STEP if statement.parse_error else statement.reason)
         return result
     if sample not in ("largest", "all"):
         return _error("sample must be 'largest' or 'all'")
@@ -761,7 +770,8 @@ def get_receipt(settings: Settings, receipt_id: str, fmt: str = "markdown") -> d
             "next_step": "Show this markdown to the human."}
 
 
-def list_receipts(settings: Settings, limit: int = 20, status: str | None = None) -> dict[str, Any]:
+def list_receipts(settings: Settings, limit: int = 20, status: str | None = None,
+                  action: str | None = None, connection: str | None = None) -> dict[str, Any]:
     """Return a compact summary of recent receipts.
 
     The full receipt stays in the store; list output is intentionally limited to
@@ -775,6 +785,10 @@ def list_receipts(settings: Settings, limit: int = 20, status: str | None = None
     receipts = all_receipts
     if status is not None:
         receipts = [rec for rec in receipts if rec.get("status") == status]
+    if action is not None:
+        receipts = [rec for rec in receipts if rec.get("action") == action]
+    if connection is not None:
+        receipts = [rec for rec in receipts if rec.get("connection") == connection]
 
     summaries = []
     for rec in receipts[:limit]:
@@ -788,14 +802,16 @@ def list_receipts(settings: Settings, limit: int = 20, status: str | None = None
             "sql_preview": sql[:120],
         })
 
-    if not all_receipts:
+    active_filters = [f"--{name} {value!r}" for name, value in
+                      (("status", status), ("action", action), ("connection", connection)) if value is not None]
+    if not all_receipts and not active_filters:
         next_step = "Run gulliver preflight, rehearse or run first; each writes a receipt."
         message = "No receipts yet."
     elif not summaries:
         existing_statuses = sorted({str(rec.get("status")) for rec in all_receipts if rec.get("status")})
         status_list = ", ".join(existing_statuses) if existing_statuses else "none"
         next_step = f"Statuses in your receipts: {status_list}."
-        message = f"No receipts with status '{status}'."
+        message = f"No receipts match {', '.join(active_filters)}."
     else:
         next_step = "Use a receipt_id with `gulliver receipt` to inspect the full receipt."
         message = None

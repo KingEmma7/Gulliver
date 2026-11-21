@@ -471,6 +471,9 @@ def fix(settings: Any, sql: str, connection: str | None = None, dialect: str | N
     from .core import _engine, _error, _fmt_bytes, _fmt_usd, _table_infos
     from .engines import EngineError, dialect_for
 
+    if mode == "all" and limit is not None and limit < 1:
+        return _error(f"limit must be at least 1, got {limit}.", "Use --limit 1 or higher, or omit --limit.")
+
     # `cases or DEFAULT_CASES` below turns 0 into the default of 200, and a negative
     # number reaches the verifier as a range with no cases, which reports having
     # checked nothing. Neither is what the caller asked for, so refuse both before any
@@ -480,6 +483,12 @@ def fix(settings: Any, sql: str, connection: str | None = None, dialect: str | N
             f"--cases must be 1 or more (got {cases}); --verify cannot check a rewrite on fewer than one case",
             next_step="Pass --cases 1 or more, or leave --cases out to use the default of 200.",
         )
+
+    if verify and timezone is not None:
+        from . import verify as verifier
+
+        if not verifier.valid_timezone(timezone):
+            return verifier.timezone_error(timezone)
 
     conn = None
     if settings is not None:
@@ -514,7 +523,7 @@ def fix(settings: Any, sql: str, connection: str | None = None, dialect: str | N
         else:
             result = rewrite(sql, dialect, mode=mode, limit=max_rows, table_info=infos or None)
         result = {"action": "fix", "dialect": dialect, **result}
-        if result.get("status") == "block":
+        if result.get("status") in ("block", "error"):
             return result
         if engine is not None and result["changes"]:
             estimates: dict[str, Any] = {}

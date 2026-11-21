@@ -139,6 +139,170 @@ def test_function_on_filter_column():
     assert "GV005" not in rules("select count(*) from events where ts >= '2024-01-01'")
 
 
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+def test_gv005_contextual_fix_advice(dialect):
+    def get_fix(sql):
+        stmt = classify(sql, dialect)
+        findings = lint(stmt.select, dialect)
+        for f in findings:
+            if f.rule == "GV005":
+                return f.fix
+        return None
+
+    # 1. Date / time function and casts
+    fix_date = get_fix("select a from t where date(created_at) = '2024-01-01' limit 5")
+    assert fix_date is not None
+    assert "Compare the raw column to a constant range" in fix_date
+    assert "created_at >= '2024-01-01'" in fix_date
+    assert "DATE(created_at)" in fix_date
+    assert "ts" not in fix_date
+
+    fix_cast = get_fix("select a from t where cast(event_time as date) = '2024-01-01' limit 5")
+    assert fix_cast is not None
+    assert "Compare the raw column to a constant range" in fix_cast
+    assert "event_time >= '2024-01-01'" in fix_cast
+    assert "ts" not in fix_cast
+
+    # 2. Arithmetic with constants (+ - * /)
+    fix_mul = get_fix("select a from t where amount * 1.2 > 100 limit 5")
+    assert fix_mul == "Move the calculation to the constant side, e.g. amount > 100 / 1.2 instead of amount * 1.2 > 100."
+    assert "ts" not in fix_mul
+
+    fix_cmp_left = get_fix("select a from t where 100 < amount * 1.2 limit 5")
+    assert fix_cmp_left == "Move the calculation to the constant side, e.g. amount > 100 / 1.2 instead of 100 < amount * 1.2."
+    assert "ts" not in fix_cmp_left
+
+    fix_add = get_fix("select a from t where amount + 5 > 100 limit 5")
+    assert fix_add == "Move the calculation to the constant side, e.g. amount > 100 - 5 instead of amount + 5 > 100."
+    assert "ts" not in fix_add
+
+    fix_sub = get_fix("select a from t where amount - 5 > 100 limit 5")
+    assert fix_sub == "Move the calculation to the constant side, e.g. amount > 100 + 5 instead of amount - 5 > 100."
+    assert "ts" not in fix_sub
+
+    fix_div = get_fix("select a from t where amount / 2 > 10 limit 5")
+    assert fix_div == "Move the calculation to the constant side, e.g. amount > 10 * 2 instead of amount / 2 > 10."
+    assert "ts" not in fix_div
+
+    fix_non_comm = get_fix("select a from t where 5 - amount > 100 limit 5")
+    assert fix_non_comm == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_non_comm
+
+    fix_neg = get_fix("select a from t where amount * -2 > 100 limit 5")
+    assert fix_neg == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_neg
+
+    fix_nested_paren = get_fix("select a from t where (amount + 5) * 2 > 100 limit 5")
+    assert fix_nested_paren == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_nested_paren
+
+    fix_nested_op = get_fix("select a from t where amount * 2 + 5 > 100 limit 5")
+    assert fix_nested_op == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_nested_op
+
+    fix_between = get_fix("select a from t where amount + 5 between 10 and 20 limit 5")
+    assert fix_between == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_between
+
+    fix_in = get_fix("select a from t where amount * 2 in (10, 20) limit 5")
+    assert fix_in == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_in
+
+    fix_zero = get_fix("select a from t where amount * 0 > 1 limit 5")
+    assert fix_zero == "Move the calculation to the constant side of the comparison."
+    assert "ts" not in fix_zero
+
+    # 3. Case or trim function
+    fix_case = get_fix("select a from t where upper(user_name) like 'A%' limit 5")
+    assert fix_case is not None
+    assert "user_name" in fix_case
+    assert "functions on user_name force a full scan" in fix_case
+    if dialect == "bigquery":
+        assert "precomputed lowercase column" in fix_case
+        assert "ILIKE" not in fix_case
+    else:
+        assert "ILIKE where supported" in fix_case
+    assert "ts" not in fix_case
+
+    fix_trim = get_fix("select id from t where trim(name) = 'a' limit 5")
+    assert fix_trim == "Store a precomputed trimmed column (or trim the data on write), as functions on name force a full scan."
+
+    fix_ltrim = get_fix("select id from t where ltrim(name) = 'a' limit 5")
+    assert fix_ltrim == "Store a precomputed trimmed column (or trim the data on write), as functions on name force a full scan."
+
+    fix_rtrim = get_fix("select id from t where rtrim(name) = 'a' limit 5")
+    assert fix_rtrim == "Store a precomputed trimmed column (or trim the data on write), as functions on name force a full scan."
+
+    # 4. COALESCE / NULL handling
+    fix_null_match = get_fix("select a from t where coalesce(order_status, 'x') = 'x' limit 5")
+    assert fix_null_match == "Write the NULL case out explicitly: (order_status = 'x' OR order_status IS NULL)."
+    assert "ts" not in fix_null_match
+
+    fix_null_diff = get_fix("select a from t where coalesce(status, 'unknown') = 'x' limit 5")
+    assert fix_null_diff == "Filter directly on the column: status = 'x'."
+    assert "ts" not in fix_null_diff
+
+    fix_null_col = get_fix("select id from t where coalesce(status, other_col) = 'x' limit 5")
+    assert fix_null_col == "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+    fix_null_upper = get_fix("select id from t where coalesce(upper(name), 'X') = 'X' limit 5")
+    assert fix_null_upper == "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+    fix_null_neq = get_fix("select a from t where coalesce(status, 'x') <> 'x' limit 5")
+    assert fix_null_neq == "Compare the raw column where possible, or filter on a partition or indexed column first."
+    assert "ts" not in fix_null_neq
+
+    fix_null_in = get_fix("select a from t where coalesce(status, 'x') in ('x', 'y') limit 5")
+    assert fix_null_in == "Compare the raw column where possible, or filter on a partition or indexed column first."
+    assert "ts" not in fix_null_in
+
+    # 5. Other function fallback
+    fix_other = get_fix("select a from t where substr(country_code, 1, 2) = 'NL' limit 5")
+    assert fix_other is not None
+    assert fix_other == "Compare the raw column where possible, or filter on a partition or indexed column first."
+    assert "ts" not in fix_other
+
+
+def test_gv005_postgres_div_integer_division():
+    stmt_pg = classify("select id from t where amount / 2 > 10 limit 5", "postgres")
+    findings_pg = [f for f in lint(stmt_pg.select, "postgres") if f.rule == "GV005"]
+    assert len(findings_pg) == 1
+    assert findings_pg[0].fix == "Move the calculation to the constant side of the comparison."
+
+    stmt_duck = classify("select id from t where amount / 2 > 10 limit 5", "duckdb")
+    findings_duck = [f for f in lint(stmt_duck.select, "duckdb") if f.rule == "GV005"]
+    assert len(findings_duck) == 1
+    assert findings_duck[0].fix == "Move the calculation to the constant side, e.g. amount > 10 * 2 instead of amount / 2 > 10."
+
+
+def test_gv005_postgres_mul_is_not_rewritten_as_a_truncating_division():
+    """`amount * 2 >= 11` must not become `amount >= 11 / 2`: Postgres truncates that to 5."""
+
+    def fix(sql, dialect):
+        stmt = classify(sql, dialect)
+        findings = [f for f in lint(stmt.select, dialect) if f.rule == "GV005"]
+        assert len(findings) == 1, (sql, dialect)
+        return findings[0].fix
+
+    generic = "Move the calculation to the constant side of the comparison."
+    assert fix("select id from t where amount * 2 >= 11 limit 5", "postgres") == generic
+    # Same comparison written the other way round, and with a negative constant.
+    assert fix("select id from t where 11 <= amount * 2 limit 5", "postgres") == generic
+    assert fix("select id from t where amount * 2 >= -11 limit 5", "postgres") == generic
+    # An exact division changes nothing on Postgres, so the concrete rewrite is still offered.
+    assert fix("select id from t where amount * 2 >= 10 limit 5", "postgres") == (
+        "Move the calculation to the constant side, e.g. amount >= 10 / 2 instead of amount * 2 >= 10.")
+    # A decimal on either side is divided as numeric by Postgres, so it keeps the concrete rewrite.
+    assert fix("select id from t where amount * 1.2 > 100 limit 5", "postgres") == (
+        "Move the calculation to the constant side, e.g. amount > 100 / 1.2 instead of amount * 1.2 > 100.")
+    assert fix("select id from t where amount * 2.0 >= 11 limit 5", "postgres") == (
+        "Move the calculation to the constant side, e.g. amount >= 11 / 2.0 instead of amount * 2.0 >= 11.")
+    # DuckDB, BigQuery and Snowflake divide with decimals, so nothing changes for them.
+    for dialect in ("duckdb", "bigquery", "snowflake"):
+        assert fix("select id from t where amount * 2 >= 11 limit 5", dialect) == (
+            "Move the calculation to the constant side, e.g. amount >= 11 / 2 instead of amount * 2 >= 11.")
+
+
 def test_order_without_limit():
     assert rules("select id from events order by id")["GV006"] == "warn"
 
@@ -368,3 +532,50 @@ def test_null_comparison_is_listed_without_autofix():
     for mode in ("safe", "all"):
         result = rewrite(sql, mode=mode)
         assert result["changes"] == []
+
+
+HAVING_BASE = "select event_type, count(*) as n from events group by event_type having "
+
+
+@pytest.mark.parametrize("having", [
+    "event_type = 'purchase'",
+    "event_type = 'purchase' and count(*) > 10",
+    "count(*) > 10 and event_type in ('a', 'b')",
+    "(event_type = 'a')",
+])
+def test_having_on_group_column_flagged(having):
+    assert rules(HAVING_BASE + having)["GV019"] == "info"
+
+
+def test_having_on_group_column_by_position_and_grouped_expression():
+    assert "GV019" in rules("select lower(name) as k, count(*) from t group by 1 having lower(name) = 'a'")
+    assert "GV019" in rules("select event_type, count(*) from events group by 1 having event_type = 'a'")
+
+
+@pytest.mark.parametrize("sql", [
+    "select event_type, count(*) as n from events group by event_type having count(*) > 10",
+    "select count(*) as n from events having count(*) > 10",
+    "select event_type, count(*) as n from events group by event_type having n > 10",
+    "select event_type, count(*) as n from events group by rollup (event_type) having event_type = 'a'",
+    "select event_type, count(*) as n from events group by cube (event_type) having event_type = 'a'",
+    "select event_type, count(*) as n from events group by grouping sets ((event_type)) having event_type = 'a'",
+    "select event_type, count(*) from events group by event_type "
+    "having event_type in (select event_type from other)",
+    "select event_type, count(*) from events group by event_type having random() < 0.5",
+    "select event_type, count(*) from events group by event_type having event_type = 'a' or count(*) > 3",
+    "select event_type, count(*) from events group by event_type having user_id = 3",
+    "select event_type, count(*) as event_type from events group by event_type having event_type > 3",
+    "select event_type, count(*) from events group by event_type having 1 = 1",
+])
+def test_having_on_group_column_not_flagged(sql):
+    assert "GV019" not in rules(sql), sql
+
+
+def test_having_on_group_column_is_listed_with_rule_metadata():
+    from gulliver.lint_report import rules as rule_docs
+
+    rule, = [r for r in rule_docs() if r["rule"] == "GV019"]
+    assert rule["name"] == "having-on-group-column"
+    assert rule["default_severity"] == "info"
+    assert rule["autofix"] == "none"
+    assert "WHERE" in rule["fix"]

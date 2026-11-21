@@ -42,7 +42,8 @@ ACTIONS = ("allow", "warn", "mask", "hash", "last4", "deny")
 _RANK = {"allow": 0, "warn": 1, "last4": 2, "hash": 3, "mask": 4, "deny": 5}
 INJECTION_ACTIONS = ("allow", "warn", "redact")
 
-SECRET_CATEGORIES = {"password", "token", "api_key", "private_key", "secret", "credential", "jwt"}
+SECRET_CATEGORIES = {"password", "token", "api_key", "private_key", "secret", "credential", "jwt",
+                     "credential_url"}
 PII_CATEGORIES = {"email", "phone", "iban", "bsn", "ssn", "passport", "card", "dob", "address", "postcode", "ip",
                   "person_name"}
 CATEGORIES = SECRET_CATEGORIES | PII_CATEGORIES
@@ -154,7 +155,15 @@ API_KEY_RE = re.compile(
     r"|hf_[A-Za-z0-9]{34}"
     r")(?![A-Za-z0-9])")
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)")
-SECRET_SHAPES = (("private_key", PRIVATE_KEY_RE), ("jwt", JWT_RE), ("api_key", API_KEY_RE))
+CREDENTIAL_URL_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9+.-]*://[^:@/\s]+:[^@/\s]+@[A-Za-z0-9_.-]+(?::\d+)?(?:/[^\s\"'<>()]*[^\s.,;:!?\"'<>()])?"
+)
+SECRET_SHAPES = (
+    ("private_key", PRIVATE_KEY_RE),
+    ("jwt", JWT_RE),
+    ("api_key", API_KEY_RE),
+    ("credential_url", CREDENTIAL_URL_RE),
+)
 
 
 def iban_valid(text: str) -> bool:
@@ -220,6 +229,8 @@ def category_from_value(value: Any) -> str | None:
         return "jwt"
     if API_KEY_RE.fullmatch(s):
         return "api_key"
+    if CREDENTIAL_URL_RE.fullmatch(s):
+        return "credential_url"
     if EMAIL_RE.fullmatch(s):
         return "email"
     if iban_valid(s):

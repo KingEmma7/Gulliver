@@ -36,6 +36,7 @@ RULES = {
     "GV016": "order-by-random",
     "GV017": "deep-offset",
     "GV018": "count-for-existence",
+    "GV019": "having-on-group-column",
     "GV020": "null-comparison",
 }
 
@@ -99,6 +100,63 @@ def _join_condition(join: exp.Join) -> exp.Expression | None:
 
 def _aliases_in(expr: exp.Expression) -> set[str]:
     return {col.table.lower() for col in expr.find_all(exp.Column) if col.table}
+
+
+def _and_parts(node: exp.Expression) -> list[exp.Expression]:
+    """The top-level AND parts of a condition, looking through parentheses."""
+    node = node.unnest()
+    if isinstance(node, exp.And):
+        return _and_parts(node.this) + _and_parts(node.expression)
+    return [node]
+
+
+def _having_on_group_column(select: exp.Select) -> exp.Expression | None:
+    """The first top-level HAVING condition that could move to WHERE, or None.
+
+    It must come from a plain GROUP BY (not ROLLUP, CUBE or GROUPING SETS), use no aggregate, window,
+    subquery or random function, and reference only GROUP BY columns (or a grouped expression written
+    the same way). Without a GROUP BY, HAVING works on one global group, so WHERE is not the same."""
+    group, having = select.args.get("group"), select.args.get("having")
+    if group is None or having is None:
+        return None
+    if any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
+        return None
+    grouped: list[exp.Expression] = []
+    for item in group.expressions:
+        if isinstance(item, exp.Literal) and item.is_int:
+            position = int(item.this)
+            if not 1 <= position <= len(select.expressions):
+                return None
+            item = select.expressions[position - 1]
+            item = item.this if isinstance(item, exp.Alias) else item
+        grouped.append(item)
+    names = {g.name.lower() for g in grouped if isinstance(g, exp.Column)}
+    expressions = [g for g in grouped if not isinstance(g, exp.Column)]
+    # A select alias of an aggregate that shares a name with a grouping column makes the name ambiguous.
+    aggregate_aliases = {p.alias.lower() for p in select.expressions
+                         if isinstance(p, exp.Alias) and p.find(*AGG_TYPES, exp.Window) is not None}
+
+    def grouped_column(column: exp.Column, part: exp.Expression) -> bool:
+        if column.name.lower() in aggregate_aliases:
+            return False
+        if column.name.lower() in names:
+            return True
+        node = column.parent
+        while node is not None:
+            if any(node == g for g in expressions):
+                return True
+            if node is part:
+                break
+            node = node.parent
+        return False
+
+    for part in _and_parts(having.this):
+        if part.find(*AGG_TYPES, exp.Window, exp.Subquery, exp.Select, exp.Rand) is not None:
+            continue
+        columns = list(part.find_all(exp.Column))
+        if columns and all(grouped_column(c, part) for c in columns):
+            return part
+    return None
 
 
 def _on_link(on: exp.Expression) -> str:
@@ -187,6 +245,207 @@ def _count_for_existence(node: exp.Expression) -> str | None:
     return None
 
 
+def _integer_value(node: exp.Expression | None) -> int | None:
+    """The value of an integer literal, with a leading minus sign if there is one."""
+    sign = 1
+    if isinstance(node, exp.Neg):
+        sign, node = -1, node.this
+    if isinstance(node, exp.Literal) and node.is_int:
+        try:
+            return sign * int(str(node.this))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _loses_a_fraction(const: exp.Expression | None, divisor: exp.Expression) -> bool:
+    """True when ``const / divisor`` drops a fraction under Postgres integer division.
+
+    Moving ``amount * 2 >= 11`` to ``amount >= 11 / 2`` is wrong on Postgres: ``11 / 2`` is 5, so the
+    rewrite also keeps rows with ``amount = 5``, whose ``5 * 2`` is 10. Only an exact division, such as
+    ``10 / 2``, gives the same rows. A decimal on either side is fine: Postgres divides it as numeric.
+    """
+    const_value, divisor_value = _integer_value(const), _integer_value(divisor)
+    if const_value is None or divisor_value is None or divisor_value == 0:
+        return False
+    return const_value % divisor_value != 0
+
+
+def _gv005_fix(
+    operand: exp.Expression,
+    column_sql: str,
+    dialect: str | None = None,
+    cmp: exp.Expression | None = None,
+) -> str:
+    """Advice text for GV005 based on the function or calculation wrapping the filtered column."""
+    # 1. Date / time function or cast to date
+    if isinstance(operand, (
+        exp.Date, exp.TsOrDsToDate, exp.DateTrunc, exp.TimestampTrunc, exp.Extract,
+        exp.TimeToStr, exp.StrToTime, exp.StrToDate, exp.DateToDi, exp.DiToDate,
+        exp.Year, exp.DayOfYear, exp.TimeTrunc, exp.DatetimeTrunc, exp.DateAdd, exp.DateSub,
+    )):
+        return (
+            f"Compare the raw column to a constant range, e.g. {column_sql} >= '2024-01-01' AND "
+            f"{column_sql} < '2024-01-02' instead of DATE({column_sql}) = '2024-01-01'."
+        )
+    if isinstance(operand, exp.Cast):
+        to_sql = operand.to.sql().upper()
+        if any(t in to_sql for t in ("DATE", "TIME", "TIMESTAMP")):
+            return (
+                f"Compare the raw column to a constant range, e.g. {column_sql} >= '2024-01-01' AND "
+                f"{column_sql} < '2024-01-02' instead of DATE({column_sql}) = '2024-01-01'."
+            )
+    if isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        if any(k in fname for k in ("date", "time", "year", "month", "day", "extract", "strftime")):
+            return (
+                f"Compare the raw column to a constant range, e.g. {column_sql} >= '2024-01-01' AND "
+                f"{column_sql} < '2024-01-02' instead of DATE({column_sql}) = '2024-01-01'."
+            )
+
+    # 2. Arithmetic with constants (+ - * /)
+    if isinstance(operand, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        if not isinstance(cmp, (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.NEQ)):
+            return "Move the calculation to the constant side of the comparison."
+
+        if isinstance(operand, exp.Div) and dialect == "postgres":
+            return "Move the calculation to the constant side of the comparison."
+
+        if isinstance(operand.this, exp.Column) and not list(operand.expression.find_all(exp.Column)):
+            col_on_right = False
+            arith_const_node = operand.expression
+        elif isinstance(operand.expression, exp.Column) and not list(operand.this.find_all(exp.Column)):
+            col_on_right = True
+            arith_const_node = operand.this
+        else:
+            return "Move the calculation to the constant side of the comparison."
+
+        if col_on_right and isinstance(operand, (exp.Sub, exp.Div)):
+            return "Move the calculation to the constant side of the comparison."
+
+        if arith_const_node is None:
+            return "Move the calculation to the constant side of the comparison."
+
+        const_val_node = arith_const_node.unnest()
+        if not isinstance(const_val_node, exp.Literal) or not const_val_node.is_number:
+            return "Move the calculation to the constant side of the comparison."
+
+        try:
+            val = float(const_val_node.this)
+            if val <= 0:
+                return "Move the calculation to the constant side of the comparison."
+        except (ValueError, TypeError):
+            return "Move the calculation to the constant side of the comparison."
+
+        op_map = {
+            exp.Add: ("+", "-"),
+            exp.Sub: ("-", "+"),
+            exp.Mul: ("*", "/"),
+            exp.Div: ("/", "*"),
+        }
+        op, inv_op = op_map[type(operand)]
+        arith_const_sql = arith_const_node.sql(dialect=dialect)
+
+        cmp_op_map = {
+            exp.GT: ">",
+            exp.GTE: ">=",
+            exp.LT: "<",
+            exp.LTE: "<=",
+            exp.EQ: "=",
+            exp.NEQ: "<>",
+        }
+        cmp_op_str = cmp_op_map.get(type(cmp), ">") if cmp is not None else ">"
+        cmp_const_node = None
+        is_col_left = True
+        if cmp is not None:
+            if cmp.this == operand:
+                cmp_const_node = cmp.args.get("expression")
+                is_col_left = True
+            elif cmp.args.get("expression") == operand:
+                cmp_const_node = cmp.this
+                is_col_left = False
+        cmp_const_sql = cmp_const_node.sql(dialect=dialect) if cmp_const_node is not None else "100"
+
+        # A multiplication is moved to the other side as a division, and Postgres divides integers with
+        # truncation, so `amount * 2 >= 11` must not become `amount >= 11 / 2` (that is 5, which also
+        # matches amount = 5). An exact division keeps the same rows, so it is still worth suggesting.
+        if isinstance(operand, exp.Mul) and dialect == "postgres" \
+                and _loses_a_fraction(cmp_const_node, arith_const_node):
+            return "Move the calculation to the constant side of the comparison."
+
+        if is_col_left:
+            orig = f"{operand.sql(dialect=dialect)} {cmp_op_str} {cmp_const_sql}"
+            rewrite = f"{column_sql} {cmp_op_str} {cmp_const_sql} {inv_op} {arith_const_sql}"
+        else:
+            flip = {">": "<", ">=": "<=", "<": ">", "<=": ">=", "=": "=", "<>": "<>"}
+            flipped_op = flip.get(cmp_op_str, cmp_op_str)
+            orig = f"{cmp_const_sql} {cmp_op_str} {operand.sql(dialect=dialect)}"
+            rewrite = f"{column_sql} {flipped_op} {cmp_const_sql} {inv_op} {arith_const_sql}"
+
+        return f"Move the calculation to the constant side, e.g. {rewrite} instead of {orig}."
+
+    # 3. Trim function (TRIM, LTRIM, RTRIM)
+    is_trim = isinstance(operand, exp.Trim)
+    if not is_trim and isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        is_trim = fname in ("trim", "ltrim", "rtrim")
+    if is_trim:
+        return (
+            f"Store a precomputed trimmed column (or trim the data on write), as functions on "
+            f"{column_sql} force a full scan."
+        )
+
+    # 4. Case function (UPPER, LOWER)
+    is_case = isinstance(operand, (exp.Upper, exp.Lower))
+    if not is_case and isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        is_case = fname in ("upper", "lower")
+    if is_case:
+        if dialect == "bigquery":
+            return (
+                f"Store or compare a normalized value: a precomputed lowercase column, as functions on "
+                f"{column_sql} force a full scan."
+            )
+        return (
+            f"Store or compare a normalized value: a case-insensitive comparison (ILIKE where supported) or "
+            f"a precomputed lowercase column, as functions on {column_sql} force a full scan."
+        )
+
+    # 5. COALESCE / IFNULL / NVL
+    is_coalesce = isinstance(operand, exp.Coalesce)
+    if not is_coalesce and isinstance(operand, exp.Func):
+        fname = (operand.key or operand.sql_name()).lower()
+        is_coalesce = fname in ("coalesce", "ifnull", "nvl")
+    if is_coalesce:
+        if not isinstance(cmp, exp.EQ):
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
+        args = ([operand.this] if operand.this is not None else []) + list(operand.expressions or [])
+        if len(args) != 2:
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
+        if not isinstance(args[0], exp.Column) or not isinstance(args[1], exp.Literal):
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+        target_val = None
+        if cmp is not None:
+            if cmp.this == operand:
+                target_val = cmp.args.get("expression")
+            elif cmp.args.get("expression") == operand:
+                target_val = cmp.this
+
+        if not isinstance(target_val, exp.Literal):
+            return "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+        target_sql = target_val.sql(dialect=dialect)
+        default_sql = args[1].sql(dialect=dialect)
+
+        if default_sql == target_sql:
+            return f"Write the NULL case out explicitly: ({column_sql} = {target_sql} OR {column_sql} IS NULL)."
+        return f"Filter directly on the column: {column_sql} = {target_sql}."
+
+    # 6. Anything else
+    return "Compare the raw column where possible, or filter on a partition or indexed column first."
+
+
 def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
          table_info: dict[str, dict] | None = None) -> list[Finding]:
     """Lint a read tree (the SELECT part). `table_info` maps lower-case table refs to engine
@@ -270,6 +529,14 @@ def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
             add("GV018", "info",
                 "A subquery counts every matching row only to test that the count is zero.",
                 "Use NOT EXISTS (SELECT 1 FROM ...): it can stop at the first match.", comparison)
+
+    # GV019 having-on-group-column: a HAVING condition on grouping columns only filters after the aggregation
+    for select in tree.find_all(exp.Select):
+        part = _having_on_group_column(select)
+        if part is not None:
+            add("GV019", "info",
+                "This HAVING condition uses only GROUP BY columns, so it filters after the aggregation.",
+                "Move it to WHERE: the engine then filters rows before it groups them.", part)
 
     # GV020 null-comparison: equality/inequality with a literal NULL is never true.
     for comparison in tree.find_all(exp.EQ, exp.NEQ):
@@ -376,11 +643,11 @@ def lint(statement_tree: exp.Expression, dialect: str = "duckdb",
                         continue
                     cols = list(operand.find_all(exp.Column))
                     if cols and not isinstance(operand, exp.AggFunc):
+                        col_sql = cols[0].sql(dialect=dialect)
                         add("GV005", "warn",
-                            f"The filter wraps {cols[0].sql(dialect=dialect)} in a function or calculation, which "
+                            f"The filter wraps {col_sql} in a function or calculation, which "
                             "blocks partition pruning and min/max skipping.",
-                            "Compare the raw column to a constant range, e.g. ts >= '2024-01-01' AND "
-                            "ts < '2024-01-02' instead of DATE(ts) = '2024-01-01'.", cmp)
+                            _gv005_fix(operand, col_sql, dialect, cmp), cmp)
                         break
 
     # GV007 exact-count-distinct

@@ -104,6 +104,8 @@ And for the pipeline around the query (details in [Pipeline tools](#pipeline-too
 
 ## Quick start (2 minutes, no warehouse needed)
 
+New to Gulliver? Start with the [step-by-step tutorial](docs/tutorial.md) on the demo database (inspect → preflight → lint → fix → rehearse → run → receipt).
+
 ```bash
 pip install gulliver-mcp
 gulliver demo                       # creates gulliver_demo.duckdb with 5M events
@@ -336,7 +338,9 @@ agent_day_usd = 5           # per agent per day (optional)
 The example file also shows the settings for the read-only gate (`allowed_paths`, `allow_remote`,
 `allow_functions`), the result guard (`policy`), the runaway guard, `[lint]`, `[review]` and `[approval]`.
 An unknown top-level key or section is refused, so a typo such as `[budjet]` cannot silently fall back to the
-default budget.
+default budget. Sections such as `[budget]`, `[connections.local]`, `[approval]`, `[lint]` and `[review]`
+must be TOML tables. A value such as `budget = 3` produces a configuration error naming the section,
+with exit code 1 and advice to fix `gulliver.toml` or the flags.
 
 ### A read-only Postgres role
 
@@ -544,7 +548,11 @@ gulliver check events --unique event_id --not-null user_id,amount \
 
 All checks become one aggregate query (one scan), budget-gated like any other. Status `fail` (exit code 4)
 when a check fails, so it drops into CI or an orchestrator. Row-count history is kept per target, so
-`--max-change` catches a load that suddenly lost half its rows.
+`--max-change` catches a load that suddenly lost half its rows. When a table has no requested checks, its row count is still recorded for that history, but `checks_requested: 0` and `next_step` explicitly say no data-quality checks were requested; add at least one check option to validate the data.
+
+`--max-null COL=PCT` is for a column that is partly empty on purpose: it passes while at most PCT percent
+(0-100) of the rows are NULL, and fails above that. `--max-null col=0` is the same as `--not-null col`, and
+an empty table has no rate, so it reports `null_pct: null` and fails instead of reading as 0% null.
 
 Add `--samples N` (1-20; MCP `samples`) to see the most frequent offending values and their row counts for
 failed unique, accepted-values and range checks. A composite key shows every key column; single-column
@@ -662,7 +670,7 @@ Every `gulliver_run` preview is checked before the agent or the receipt on disk 
 
 - **Sensitive columns** by name (`email`, `iban`, `card_number`, `password`, `api_key`, Dutch names too),
   through your SQL (aliases, CTEs, `SELECT *`, a whole row as one value), and by validated value patterns
-  (email, phone, IBAN mod-97, Luhn card numbers, BSN 11-check, IP, JWT, API-key shapes).
+  (email, phone, IBAN mod-97, Luhn card numbers, BSN 11-check, IP, JWT, API-key shapes, connection URLs with passwords).
 - **Untrusted envelope.** The result has `untrusted: true`. Text that reads like instructions to an AI ("ignore
   previous instructions", `gulliver_*` tool names, hidden Unicode, base64) is listed in `injection` and
   `data_warnings`.
@@ -724,6 +732,10 @@ Fixes are applied as small text edits (comments, line endings and Jinja stay) an
 edited statement re-parses to exactly the rewritten tree. Details:
 [docs/features/lint-ci.md](https://github.com/laaielichter/Gulliver/blob/main/docs/features/lint-ci.md).
 
+SQL syntax errors include readable line/column diagnostics and syntax-specific retry advice.
+Tokenizer failures use an explicitly labeled end-of-input fallback. See the
+[syntax-error guide](docs/features/lint-ci.md#sql-syntax-errors).
+
 ### `gulliver review` and the GitHub Action
 
 ```bash
@@ -779,6 +791,7 @@ The action posts one PR comment and updates it on every push, writes the job sum
 | GV016 | order-by-random | warn |
 | GV017 | deep-offset | warn |
 | GV018 | count-for-existence | info |
+| GV019 | having-on-group-column | info |
 | GV020 | null-comparison | warn |
 | GV900 | parse-error (file lint only) | warn |
 | GV901 | unused-ignore (an unreadable or unused `gulliver: ignore`) | warn |
@@ -806,23 +819,23 @@ gulliver lint PATH... [--format text|json|sarif|github|gitlab|junit|markdown] [-
                       [--exclude GLOB] [--warn-unused-ignores] [--metadata] [-o PATH]   files and folders (CI)
                       [--baseline FILE] [--write-baseline [FILE]]   report only findings not in the baseline
 gulliver rules [--format text|markdown|json]   every lint rule: id, name, severity, autofix
-gulliver fix SQL [--dialect D] [--mode safe|all] [--limit N] [-o PATH]   rewrite SQL, say what changes
+gulliver fix SQL [--dialect D] [--mode safe|all] [--limit N] [-o PATH]   rewrite SQL, say what changes; limit >= 1 in all mode, ignored in safe mode
 gulliver fix SQL --verify [--cases 200] [--seed 0] [--timezone TZ]      test every rewrite on generated data
 gulliver fix --check | --write PATH...                                  same-rows rewrites in files (CI)
 gulliver preflight SQL                estimate + lint + gate, no execution
 gulliver rehearse SQL [--fractions 0.01,0.03,0.1] [--sample largest|all] [--method auto|system|bernoulli]
 gulliver run SQL [--max-rows N] [--allow-write]
 gulliver receipt [ID|latest] [--format markdown|json] [-o PATH]
-gulliver receipt --list [--limit N] [--status STATUS] [--json]
+gulliver receipt --list [--limit 20] [--status S] [--action A] [--connection C] [--json]
 gulliver approve ID [--note TEXT]     (human only)
-gulliver demo [PATH]                  create a demo DuckDB database
+gulliver demo [PATH] [--events N] [--overwrite] create a demo DuckDB database
 gulliver lineage --models DIR | --manifest FILE
 gulliver impact TABLE[.COLUMN] --models DIR | --manifest FILE
 gulliver snapshot | drift [--models DIR] [--save]
 gulliver diff --left SQL --right SQL --key k1,k2 [--right-connection NAME] [--columns a,b]
 gulliver translate SQL --to D [--from D] [--check] [-o PATH]
-gulliver incremental SQL [--time-column C] [--unique-key K] [--period 1d] [--lookback 1]
-gulliver check TARGET [--where W] [--unique K] [--not-null C] [--accepted C=a|b] [--range C=min:max] [--fresh C=24h] [--min-rows N] [--max-change PCT] [--samples 0-20]
+gulliver incremental SQL [--time-column C] [--unique-key K] [--period 1d] [--lookback 1] [--no-savings]   lookback must be at least 0
+gulliver check TARGET [--where W] [--unique K] [--not-null C] [--max-null C=PCT] [--accepted C=a|b] [--range C=min:max] [--fresh C=24h] [--min-rows N] [--max-change PCT] [--samples 0-20]
 gulliver top [--source auto|receipts|pg_stat_statements|bigquery_jobs|snowflake_history|csv:FILE|jsonl:FILE]
              [--file PATH] [--days 7] [--limit 20] [--analyze 10] [--rank-by auto|cost|runtime|bytes|calls] [-o PATH]
 gulliver review [--models DIR] [--base REF] [--head REF] | [--manifest-base FILE --manifest-head FILE]
@@ -831,10 +844,14 @@ gulliver review [--models DIR] [--base REF] [--head REF] | [--manifest-base FILE
 gulliver selftest security [--corpus FILE]   the bypass test set and the DuckDB sandbox
 gulliver spend [--by agent|day|table|session|task|connection|kind] [--days 7] [--format markdown|csv] [-o PATH]
 gulliver audit verify [--head HASH]   check the hash chain over ledger, receipts and approvals
-gulliver prune [--older-than 30d] [--keep-last N] [--dry-run]   clean up old receipts and expired approvals
+gulliver prune [--older-than 30d] [--keep-last N] [--dry-run]   clean up old receipts and expired approvals; keep-last must be at least 0
 gulliver tools --format mcp|openai|gemini [--toolset core|pipeline|all|NAMES]
-gulliver mcp [--http] [--toolset core|pipeline|all|NAMES]   start the MCP server
+gulliver mcp [--http] [--host HOST] [--port N] [--toolset core|pipeline|all|NAMES]   start the MCP server
 ```
+
+Receipt-list filters combine. If nothing matches, the message names only the supplied filters, for example
+`No receipts match --action 'run', --connection 'warehouse'.` An empty unfiltered list still says
+`No receipts yet.` JSON output keeps `receipts: []` for either empty case.
 
 Exit codes: `0` ok, `1` error, `2` blocked (also: a lint finding at `--fail-on`, a rewrite found by
 `fix --check`, a review that says do not merge), `3` needs rehearsal or approval, `4` a check failed (data
@@ -935,6 +952,8 @@ See [AGENTS.md](https://github.com/laaielichter/Gulliver/blob/main/AGENTS.md) fo
 Thanks to everyone who helps:
 
 <a href="https://github.com/laaielichter/Gulliver/graphs/contributors"><img src="https://contrib.rocks/image?repo=laaielichter/Gulliver" alt="Contributors to Gulliver"></a>
+
+If Gulliver is useful to you, a ⭐ on the repo helps other people find it.
 
 ## License
 

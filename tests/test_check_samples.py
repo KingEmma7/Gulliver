@@ -254,3 +254,49 @@ def test_mcp_client_receives_guarded_samples(sample_settings, monkeypatch):
     result = asyncio.run(call()).structured_content
     assert result["status"] == "fail" and result["untrusted"] is True
     assert outcome(result, "unique")["samples"] == [{"values": {"user_id": 1}, "rows": 3}]
+
+
+# -- max_null: the null rate of a column that is partly empty on purpose ----------------
+def test_max_null_reports_the_rate_and_fails_above_it(sample_settings):
+    # 8 rows: user_id has 3 NULLs (37.5%), amount has 1 (12.5%).
+    over = features.check(sample_settings, "items", max_null=["user_id=10"])
+    assert over["status"] == "fail" and over["failed"] == 1
+    rate = outcome(over, "null_rate")
+    assert rate["column"] == "user_id"
+    assert rate["null_pct"] == 37.5 and rate["failing_rows"] == 3 and rate["max_null_pct"] == 10.0
+    assert rate["passed"] is False
+    assert "null_rate on user_id" in over["next_step"]
+
+    under = features.check(sample_settings, "items", max_null=["amount=50"])
+    assert under["status"] == "ok" and outcome(under, "null_rate")["passed"] is True
+    assert outcome(under, "null_rate")["null_pct"] == 12.5
+
+
+def test_max_null_zero_is_the_same_as_not_null(sample_settings):
+    zero = features.check(sample_settings, "items", max_null=["kind=0"])
+    strict = features.check(sample_settings, "items", not_null=["kind"])
+    assert zero["status"] == strict["status"] == "ok"
+    assert outcome(zero, "null_rate")["failing_rows"] == outcome(strict, "not_null")["failing_rows"] == 0
+
+
+def test_max_null_on_an_empty_table_is_not_a_pass(sample_settings):
+    empty = features.check(sample_settings, "items", where="user_id = 999", max_null=["user_id=50"])
+    rate = outcome(empty, "null_rate")
+    assert rate["null_pct"] is None and rate["passed"] is False
+    assert rate["message"] == "The table or query returned no rows."
+
+
+def test_cli_max_null_refuses_a_bad_value(capsys, sample_settings):
+    code = main(["--dsn", sample_settings.connection(None).params["path"], "--json", "check", "items",
+                 "--max-null", "user_id=101"])
+    assert code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "error" and "between 0 and 100" in data["error"]
+
+
+def test_cli_max_null_runs_the_check(capsys, sample_settings):
+    code = main(["--dsn", sample_settings.connection(None).params["path"], "--json", "check", "items",
+                 "--max-null", "user_id=10"])
+    assert code == 4, "a failed data check exits 4"
+    data = json.loads(capsys.readouterr().out)
+    assert [c["check"] for c in data["checks"] if c["check"] == "null_rate"] == ["null_rate"]
