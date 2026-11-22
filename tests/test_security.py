@@ -350,3 +350,12 @@ def test_every_duckdb_file_reader_is_checked():
                and ({"path", "paths", "file", "files"} & set(params or []) or name.startswith("read_"))}
     missing = sorted(n for n in readers if n not in security.FILE_FUNCTIONS and n not in security._FUNCTIONS)
     assert missing == []
+
+
+def test_parquet_page_index_path_is_checked():
+    """parquet_page_index (newer DuckDB) reads a Parquet file, so its path goes through the same check (#206)."""
+    policy = security.SecurityPolicy(allowed_paths=(os.path.abspath("/srv/lake"),), allow_remote=False)
+    assert classify("select * from parquet_page_index('/srv/lake/a.parquet')", "duckdb", policy).kind == "read"
+    assert classify("select * from parquet_page_index('/etc/a.parquet')", "duckdb", policy).code == "GS004"
+    assert classify("select * from parquet_page_index('https://example.com/a.parquet')", "duckdb",
+                    policy).code == "GS004"

@@ -28,6 +28,7 @@
 - `check` refuses a negative `--min-rows` and a negative, NaN or infinite `--max-change` with `status: error` and exit 1, instead of a check that always passes or always fails; `0` stays valid for both. Thanks to @rohangoud17! (#106, #138)
 - `gulliver-mcp --port` and `gulliver mcp --port` refuse a value outside 0-65535 with a one-line `gulliver-mcp: port must be 0-65535` message and exit 2, instead of an `OverflowError` traceback. `--port 0` stays valid. Thanks to @HarshRajSinghania! (#113, #114)
 - `incremental --lookback` and `prune --keep-last` refuse a negative number with `status: error` and a `next_step`, before any SQL advice is built or any receipt is pruned (a rejected `prune` leaves the receipt and audit files untouched). `0` stays valid. Thanks to @yinbowen-dc! (#98, #100)
+- The DuckDB path check also covers `parquet_page_index`, a table function newer DuckDB versions add that reads a Parquet file: a path outside `allowed_paths` or a remote URL that is not allowed is now refused with GS004, like `parquet_metadata`. Thanks to @shaw778! (#206, #207)
 
 ### Added
 - Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
@@ -36,6 +37,7 @@
 - A step-by-step tutorial on the demo database, [docs/tutorial.md](docs/tutorial.md), linked from the README quick start: inspect, preflight, lint, fix, rehearse, run and receipt, with the output to expect and no warehouse needed. Thanks to @HarshRajSinghania! (#134, #136)
 - `gulliver demo --help` describes `--overwrite` and `--events`, `gulliver mcp --help` and `gulliver-mcp --help` describe `--http`, `--host` and `--port`, and the README CLI reference lists `demo --events/--overwrite`, `incremental --no-savings` and `mcp --host/--port`. Defaults and behaviour are unchanged. Thanks to @HarshRajSinghania! (#124, #149)
 - `gulliver receipt --list` takes `--action` (for example `run` or `rehearse`) and uses the global `--connection` to list only the receipts of that action or connection. They combine with `--status`, the limit is applied after all filters, and the output stays summary-only. Thanks to @yinbowen-dc! (#93, #101)
+- `gulliver lint --format markdown` prints a Markdown report for GitHub Actions job summaries (`>> $GITHUB_STEP_SUMMARY`) and PR comments: a summary line and a `Severity | Rule | Where | Problem | Fix` table, with `|` and line breaks escaped in cells, a one-line result for a clean run, and a note when the table is cut to stay under the 65,536-character comment limit. Works with `-o` and `--fail-on`. Thanks to @shaw778! (#133, #179)
 
 ## 0.4.0 - 2026-11-11
 
