@@ -194,7 +194,7 @@ def _escape_cell(text: str | None) -> str:
     if not text:
         return ""
     clean = str(text).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-    return clean.replace("|", r"\|")
+    return clean.replace("|", r"\|").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def to_markdown(result: dict[str, Any]) -> str:
@@ -260,7 +260,8 @@ def to_markdown(result: dict[str, Any]) -> str:
             fix = f.fix
 
         rule_str = f"{rule} {name}".strip()
-        where = f"`{path}:{line}:{col}`"
+        where_loc = f"{path}:{line}:{col}".replace("|", r"\|")
+        where = f"`{where_loc}`"
         prob_str = _escape_cell(msg)
         fix_str = _escape_cell(fix or "")
         row = f"| {severity} | {rule_str} | {where} | {prob_str} | {fix_str} |"
