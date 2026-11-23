@@ -347,9 +347,9 @@ def test_cli_rehearse_options_validation(demo_db, state, capsys):
 
 
 def test_cli_spend_refuses_a_huge_days_but_keeps_long_windows(demo_db, state, capsys):
-    for days in ("1000000000", "99999999999"):
+    for days in ("36501", "1000000000", "99999999999"):
         assert main(["--dsn", demo_db, "spend", "--days", days, "--json"]) == 1
         data = json.loads(capsys.readouterr().out)
-        assert data["status"] == "error" and "--days must be between 1 and" in data["error"] and data["next_step"]
+        assert data["status"] == "error" and "36500" in data["error"] and data["next_step"]
     assert main(["--dsn", demo_db, "spend", "--days", "400", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["days"] == 400
