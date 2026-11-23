@@ -316,6 +316,66 @@ def test_markdown_format_escapes_pipe_and_newlines(tmp_path):
     assert r"\|" in cells[4]
 
 
+def test_markdown_format_escapes_angle_brackets(tmp_path):
+    from gulliver.lint_files import FileFinding, FileResult
+
+    finding = FileFinding(
+        path="models/join.sql",
+        rule="GV003",
+        severity="error",
+        message="A join without ON <key> = <key>",
+        fix="Add ON <key> = <key> (or USING)...",
+        line=1,
+        col=1,
+        end_line=1,
+        end_col=5,
+        statement=1,
+        snippet="",
+    )
+    result = {
+        "files": 1,
+        "statements": 1,
+        "counts": {"error": 1, "warn": 0, "info": 0},
+        "_results": [FileResult(path="models", file=tmp_path / "models", findings=[finding])],
+    }
+    text = render(result, "markdown")
+    assert "&lt;key&gt;" in text
+    assert "<key>" not in text
+    assert "A join without ON &lt;key&gt; = &lt;key&gt;" in text
+    assert "Add ON &lt;key&gt; = &lt;key&gt; (or USING)..." in text
+
+
+def test_markdown_format_escapes_pipe_in_where_column(tmp_path):
+    from gulliver.lint_files import FileFinding, FileResult
+
+    finding = FileFinding(
+        path="models/we|ird.sql",
+        rule="GV001",
+        severity="warn",
+        message="SELECT * used",
+        fix="List columns",
+        line=1,
+        col=1,
+        end_line=1,
+        end_col=5,
+        statement=1,
+        snippet="",
+    )
+    result = {
+        "files": 1,
+        "statements": 1,
+        "counts": {"error": 0, "warn": 1, "info": 0},
+        "_results": [FileResult(path="models", file=tmp_path / "models", findings=[finding])],
+    }
+    text = render(result, "markdown")
+    assert r"`models/we\|ird.sql:1:1`" in text
+
+    row = [line for line in text.splitlines() if line.startswith("| warn |")][0]
+    cells = [c.strip() for c in re.split(r"(?<!\\)\|", row.strip()) if c]
+    assert len(cells) == 5
+    assert cells[2] == r"`models/we\|ird.sql:1:1`"
+
+
 def test_markdown_summary_includes_ignored_and_baselined(tmp_path):
     from gulliver.lint_files import FileFinding, FileResult
 
