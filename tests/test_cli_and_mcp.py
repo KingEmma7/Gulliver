@@ -145,14 +145,14 @@ def test_cli_receipt_list_unknown_status_lists_existing_statuses(demo_db, state,
 
     assert main(["--dsn", demo_db, "receipt", "--list", "--status", "bogus"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("No receipts with status 'bogus'.\n")
+    assert out.startswith("No receipts match --status 'bogus'.\n")
     assert "next: Statuses in your receipts: ok." in out
 
     assert main(["--dsn", demo_db, "receipt", "--list", "--status", "bogus", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["status"] == "ok"
     assert data["receipts"] == []
-    assert data["message"] == "No receipts with status 'bogus'."
+    assert data["message"] == "No receipts match --status 'bogus'."
     assert data["next_step"] == "Statuses in your receipts: ok."
 
 
@@ -163,6 +163,24 @@ def test_cli_translate_output_file(tmp_path, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["warnings"]  # still printed
     assert out.read_text(encoding="utf-8") == data["sql"]
+
+
+
+@pytest.mark.parametrize("extra, message", [
+    (["--min-rows", "-5"], "min_rows"),
+    (["--max-change", "-5"], "max_change"),
+    (["--max-change", "nan"], "max_change"),
+    (["--max-change", "inf"], "max_change"),
+])
+def test_check_refuses_invalid_thresholds(demo_db, capsys, extra, message):
+    code = main(["--dsn", demo_db, "--json", "check", "events", "--not-null", "event_id", *extra])
+    assert code == 1
+    assert message in capsys.readouterr().out
+
+
+def test_check_accepts_zero_min_rows(demo_db):
+    assert main(["--dsn", demo_db, "--json", "check", "events", "--not-null", "event_id", "--min-rows", "0"]) == 0
+
 
 
 @pytest.mark.parametrize("command", ["lint", "preflight", "rehearse", "run"])
@@ -192,6 +210,7 @@ def test_cli_non_syntax_blocks_keep_existing_advice(sql, demo_db, state, capsys)
             assert result["next_step"] == (
                 "Rewrite it as one SELECT (or CREATE/INSERT ... SELECT). " + result["statement"]["reason"]
             )
+
 
 
 def test_mcp_check_by_name_and_status_checks(demo_db, state, tmp_path, monkeypatch):

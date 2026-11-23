@@ -104,6 +104,8 @@ And for the pipeline around the query (details in [Pipeline tools](#pipeline-too
 
 ## Quick start (2 minutes, no warehouse needed)
 
+New to Gulliver? Start with the [step-by-step tutorial](docs/tutorial.md) on the demo database (inspect → preflight → lint → fix → rehearse → run → receipt).
+
 ```bash
 pip install gulliver-mcp
 gulliver demo                       # creates gulliver_demo.duckdb with 5M events
@@ -705,7 +707,7 @@ the ledger, receipts and approvals. Details:
 
 ```bash
 gulliver lint models/ queries/                          # every *.sql file, dbt Jinja included, with line:col
-gulliver lint models/ --format sarif -o gulliver.sarif  # GitHub Code Scanning; also github, gitlab, junit, json
+gulliver lint models/ --format sarif -o gulliver.sarif  # GitHub Code Scanning; also markdown, github, gitlab, junit, json
 gulliver lint models/ --fail-on warn                    # exit 2 on warnings too (default: errors)
 gulliver fix --check models/ -c warehouse               # exit 2 when a same-rows rewrite exists
 gulliver fix --write models/ -c warehouse               # apply only same-rows rewrites, in place
@@ -813,7 +815,7 @@ The read-only gate uses its own codes. A `GS` finding is always a `block` with t
 gulliver status                       connections, budget, spend today (and your own, under caller)
 gulliver inspect [TABLE] [--limit 25] [--sensitive] [--scan N]   limit: 1-200 (ignored with TABLE); scan: 0-1000, 0 disables scanning
 gulliver lint SQL [--dialect D]       scale lint of one query
-gulliver lint PATH... [--format text|json|sarif|github|gitlab|junit] [--fail-on error|warn|info|never]
+gulliver lint PATH... [--format text|json|sarif|github|gitlab|junit|markdown] [--fail-on error|warn|info|never]
                       [--exclude GLOB] [--warn-unused-ignores] [--metadata] [-o PATH]   files and folders (CI)
                       [--baseline FILE] [--write-baseline [FILE]]   report only findings not in the baseline
 gulliver rules [--format text|markdown|json]   every lint rule: id, name, severity, autofix
@@ -824,15 +826,15 @@ gulliver preflight SQL                estimate + lint + gate, no execution
 gulliver rehearse SQL [--fractions 0.01,0.03,0.1] [--sample largest|all] [--method auto|system|bernoulli]
 gulliver run SQL [--max-rows N] [--allow-write]
 gulliver receipt [ID|latest] [--format markdown|json] [-o PATH]
-gulliver receipt --list [--limit N] [--status STATUS] [--json]
+gulliver receipt --list [--limit 20] [--status S] [--action A] [--connection C] [--json]
 gulliver approve ID [--note TEXT]     (human only)
-gulliver demo [PATH]                  create a demo DuckDB database
+gulliver demo [PATH] [--events N] [--overwrite] create a demo DuckDB database
 gulliver lineage --models DIR | --manifest FILE
 gulliver impact TABLE[.COLUMN] --models DIR | --manifest FILE
 gulliver snapshot | drift [--models DIR] [--save]
 gulliver diff --left SQL --right SQL --key k1,k2 [--right-connection NAME] [--columns a,b]
 gulliver translate SQL --to D [--from D] [--check] [-o PATH]
-gulliver incremental SQL [--time-column C] [--unique-key K] [--period 1d] [--lookback 1]
+gulliver incremental SQL [--time-column C] [--unique-key K] [--period 1d] [--lookback 1] [--no-savings]   lookback must be at least 0
 gulliver check TARGET [--where W] [--unique K] [--not-null C] [--max-null C=PCT] [--accepted C=a|b] [--range C=min:max] [--fresh C=24h] [--min-rows N] [--max-change PCT] [--samples 0-20]
 gulliver top [--source auto|receipts|pg_stat_statements|bigquery_jobs|snowflake_history|csv:FILE|jsonl:FILE]
              [--file PATH] [--days 7] [--limit 20] [--analyze 10] [--rank-by auto|cost|runtime|bytes|calls] [-o PATH]
@@ -842,10 +844,14 @@ gulliver review [--models DIR] [--base REF] [--head REF] | [--manifest-base FILE
 gulliver selftest security [--corpus FILE]   the bypass test set and the DuckDB sandbox
 gulliver spend [--by agent|day|table|session|task|connection|kind] [--days 7] [--format markdown|csv] [-o PATH]
 gulliver audit verify [--head HASH]   check the hash chain over ledger, receipts and approvals
-gulliver prune [--older-than 30d] [--keep-last N] [--dry-run]   clean up old receipts and expired approvals
+gulliver prune [--older-than 30d] [--keep-last N] [--dry-run]   clean up old receipts and expired approvals; keep-last must be at least 0
 gulliver tools --format mcp|openai|gemini [--toolset core|pipeline|all|NAMES]
-gulliver mcp [--http] [--toolset core|pipeline|all|NAMES]   start the MCP server
+gulliver mcp [--http] [--host HOST] [--port N] [--toolset core|pipeline|all|NAMES]   start the MCP server
 ```
+
+Receipt-list filters combine. If nothing matches, the message names only the supplied filters, for example
+`No receipts match --action 'run', --connection 'warehouse'.` An empty unfiltered list still says
+`No receipts yet.` JSON output keeps `receipts: []` for either empty case.
 
 Exit codes: `0` ok, `1` error, `2` blocked (also: a lint finding at `--fail-on`, a rewrite found by
 `fix --check`, a review that says do not merge), `3` needs rehearsal or approval, `4` a check failed (data
