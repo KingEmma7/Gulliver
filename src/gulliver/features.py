@@ -245,7 +245,8 @@ def diff(settings: Settings, left_sql: str, right_sql: str, key: list[str], conn
          right_connection: str | None = None, columns: list[str] | None = None,
          buckets: int = diffing.DEFAULT_BUCKETS, max_keys: int = 20) -> dict[str, Any]:
     if not key:
-        return _error("Give the key column(s) that identify a row, e.g. key=['order_id'].")
+        return _error("Give the key column(s) that identify a row, e.g. key=['order_id'].",
+                      "Pass the column(s) that identify a row, for example --key order_id.")
     left_sql = _as_query(left_sql.strip().rstrip(";"))
     right_sql = _as_query(right_sql.strip().rstrip(";"))
     store = _store(settings)

@@ -346,6 +346,22 @@ def test_diff_bad_key(settings):
     assert features.diff(settings, "users", "users", ["nope"])["status"] == "error"
 
 
+def test_diff_empty_key_next_step(settings, demo_db, capsys):
+    import json
+
+    from gulliver.cli import main
+
+    res = features.diff(settings, "select 1 id", "select 1 id", [])
+    assert res["status"] == "error"
+    assert res["error"] == "Give the key column(s) that identify a row, e.g. key=['order_id']."
+    assert res["next_step"] == "Pass the column(s) that identify a row, for example --key order_id."
+    assert main(["--dsn", demo_db, "diff", "--left", "select 1 id", "--right", "select 1 id",
+                 "--key", "", "--json"]) == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "error"
+    assert data["next_step"] == "Pass the column(s) that identify a row, for example --key order_id."
+
+
 # -- incremental -----------------------------------------------------------------------------------------
 @pytest.mark.parametrize("sql,expected", [
     ("select event_id, user_id, ts from events where event_type = 'buy'", "append"),
