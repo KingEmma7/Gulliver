@@ -869,3 +869,14 @@ def test_prune_cli(settings, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["status"] == "error"
     assert "out of range" in data["error"]
+
+
+def test_spend_refuses_days_above_the_limit(settings):
+    """A huge --days crashed with OverflowError in the date math (#107); long but valid windows still work."""
+    assert runaway.MAX_SPEND_DAYS == 36500
+    for days in (runaway.MAX_SPEND_DAYS + 1, 1_000_000_000, 99999999999):
+        res = runaway.spend(settings, by="agent", days=days)
+        assert res["status"] == "error" and "36500" in res["error"] and res["next_step"]
+    for days in (1, 400, runaway.MAX_SPEND_DAYS):
+        res = runaway.spend(settings, by="agent", days=days)
+        assert res["status"] == "ok" and res["days"] == days
