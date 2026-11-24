@@ -30,6 +30,7 @@
 - `incremental --lookback` and `prune --keep-last` refuse a negative number with `status: error` and a `next_step`, before any SQL advice is built or any receipt is pruned (a rejected `prune` leaves the receipt and audit files untouched). `0` stays valid. Thanks to @yinbowen-dc! (#98, #100)
 - The DuckDB path check also covers `parquet_page_index`, a table function newer DuckDB versions add that reads a Parquet file: a path outside `allowed_paths` or a remote URL that is not allowed is now refused with GS004, like `parquet_metadata`. Thanks to @shaw778! (#206, #207)
 - `lint --format markdown` keeps `<` and `>` in the Problem and Fix cells (escaped as `&lt;` / `&gt;`), so GV003's `Add ON <key> = <key>` no longer loses its placeholders on GitHub, and a `|` in a file path is escaped in the Where cell, so the table row stays intact. Thanks to @dianatofficial! (#209, #210)
+- `spend --days N` refuses a value above 36500 (about 100 years) with `status: error`, a `next_step` and exit 1, before any date math, instead of an `OverflowError` traceback for a huge `--days`. Values from 1 to 36500 work as before. Thanks to @rohangoud17! (#107, #161)
 
 ### Added
 - Lint rule GV020 `null-comparison`: warns on `= NULL`, `<> NULL` and `!= NULL` in either operand order, including joins and CASE expressions. Suggests NULL predicates without an autofix because results change Thanks to @amritkang165! (#129, #137)
