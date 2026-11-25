@@ -98,3 +98,39 @@ def test_matching_filter_keeps_receipt_output(receipts, capsys):
     output = capsys.readouterr().out
     assert "other-connection" in output
     assert "No receipts" not in output
+
+
+@pytest.mark.parametrize("filters, expected_next_step", [
+    ({"status": "missing"}, "Statuses in your receipts: block, ok."),
+    ({"action": "missing"}, "Actions in your receipts: preflight, run."),
+    ({"connection": "missing"}, "Connections in your receipts: local, warehouse."),
+    (
+        {"action": "missing", "connection": "warehouse"},
+        "Actions in your receipts: preflight, run. Connections in your receipts: local, warehouse.",
+    ),
+    (
+        {"status": "block", "action": "preflight", "connection": "local"},
+        "Statuses in your receipts: block, ok. Actions in your receipts: preflight, run. "
+        "Connections in your receipts: local, warehouse.",
+    ),
+])
+def test_empty_filtered_receipts_next_step_lists_active_filter_values(
+    receipts, capsys, filters, expected_next_step
+):
+    result = core.list_receipts(receipts, **filters)
+    assert result["receipts"] == []
+    assert result["next_step"] == expected_next_step
+    args = ["receipt", "--list", "--json"]
+    for key, value in filters.items():
+        args.extend([f"--{key}", value])
+    assert main(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["next_step"] == expected_next_step
+
+
+def test_empty_store_filtered_receipts_next_step_says_none(settings, capsys):
+    result = core.list_receipts(settings, action="missing", connection="missing")
+    assert result["next_step"] == "Actions in your receipts: none. Connections in your receipts: none."
+    assert main(["receipt", "--list", "--action", "missing", "--connection", "missing", "--json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["next_step"] == "Actions in your receipts: none. Connections in your receipts: none."

@@ -808,9 +808,23 @@ def list_receipts(settings: Settings, limit: int = 20, status: str | None = None
         next_step = "Run gulliver preflight, rehearse or run first; each writes a receipt."
         message = "No receipts yet."
     elif not summaries:
-        existing_statuses = sorted({str(rec.get("status")) for rec in all_receipts if rec.get("status")})
-        status_list = ", ".join(existing_statuses) if existing_statuses else "none"
-        next_step = f"Statuses in your receipts: {status_list}."
+        filter_fields = (
+            ("status", "Statuses", status),
+            ("action", "Actions", action),
+            ("connection", "Connections", connection),
+        )
+        hints = []
+        for field, label, value in filter_fields:
+            if value is None:
+                continue
+            existing = sorted({str(rec.get(field)) for rec in all_receipts if rec.get(field)})
+            values_str = ", ".join(existing) if existing else "none"
+            hints.append(f"{label} in your receipts: {values_str}.")
+        if not hints:
+            existing = sorted({str(rec.get("status")) for rec in all_receipts if rec.get("status")})
+            values_str = ", ".join(existing) if existing else "none"
+            hints.append(f"Statuses in your receipts: {values_str}.")
+        next_step = " ".join(hints)
         message = f"No receipts match {', '.join(active_filters)}."
     else:
         next_step = "Use a receipt_id with `gulliver receipt` to inspect the full receipt."
