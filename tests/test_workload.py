@@ -571,6 +571,18 @@ def test_top_refuses_limit_below_one_and_negative_analyze(settings, demo_db, wor
     assert workload.top(settings, source=f"csv:{workload_csv}", limit=1)["top"][0]["rank"] == 1
 
 
+def test_top_refuses_days_out_of_range(settings, demo_db, workload_csv, capsys):
+    for days in (0, -5, 366):
+        res = workload.top(settings, source=f"csv:{workload_csv}", days=days)
+        assert res["status"] == "error"
+        assert res["error"] == "--days must be between 1 and 365."
+        assert res["next_step"] == "Use a window from 1 to 365 days, for example --days 7."
+        assert main(["--dsn", demo_db, "top", "--source", f"csv:{workload_csv}", "--days", str(days), "--json"]) == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "error"
+        assert data["next_step"] == "Use a window from 1 to 365 days, for example --days 7."
+
+
 def test_mcp_top_tool(demo_db, state, workload_csv, monkeypatch):
     import asyncio
 

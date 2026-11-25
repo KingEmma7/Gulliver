@@ -670,7 +670,8 @@ def top(settings: Settings, source: str = "auto", connection: str | None = None,
     if rank_by not in RANK_BY:
         return _error(f"rank_by must be one of {', '.join(RANK_BY)}")
     if days <= 0 or days > 365:
-        return _error("days must be between 1 and 365.")
+        return _error("--days must be between 1 and 365.",
+                      "Use a window from 1 to 365 days, for example --days 7.")
     if limit < 1:
         return _error("--limit must be at least 1.", "Give a positive number of groups, for example --limit 20.")
     if analyze < 0:
